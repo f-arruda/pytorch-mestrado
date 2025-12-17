@@ -1,0 +1,20 @@
+{
+    "image": "dl-pytorch-jupyter:v2",
+    "name": "DL/ML Otimizado (NVIDIA NGC)",
+
+
+
+    // Mantemos as otimizações de GPU no runArgs
+    "runArgs": [
+        "--gpus", "all",
+        "--ipc=host",
+        "--ulimit", "memlock=-1",
+        "--ulimit", "stack=67108864",
+        "-p", "8888:8888"
+    ],
+
+    "extensions": [
+        "ms-python.python", 
+        "ms-toolsai.jupyter"
+    ]
+}

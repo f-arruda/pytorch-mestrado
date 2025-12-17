@@ -1,0 +1,9 @@
+# .dockerignore
+
+# Dados e Modelos (Arquivos Persistentes)
+data/
+models/
+notebooks/
+src/
+utils/
+
