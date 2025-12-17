@@ -34,8 +34,9 @@ except ImportError:
 CONFIG = {
     'csv_path': 'data/base_teste.csv',
     'target_col': 'Pot_BT',
-    'feature_cols': ['Velocidade média do vento m/s', 'Temperatura ambiente °C',    # atributos de entrada
-                     'Umidade Relativa %','Pot_BT', 'cos_zenith', 'sin_azimuth'],   # ['Pot_BT', 'cos_zenith', 'sin_azimuth']  
+    'feature_cols': ['Pot_BT', 'cos_zenith', 'sin_azimuth'],   # ['Pot_BT', 'cos_zenith', 'sin_azimuth']  
+                                                               # ['Velocidade média do vento m/s', 'Temperatura ambiente °C',   
+                                                               #  'Umidade Relativa %']
     'input_seq_len': 24,    # n_past
     'output_seq_len': 1,   # n_fut
     'hidden_sizes': [128, 64],
@@ -43,11 +44,11 @@ CONFIG = {
     'batch_size': 64,
     'epochs': 10000,        # Limite alto, controlado pelo Early Stopping
     'learning_rate': 0.001,
-    'patience': 20,        # Igual ao seu código antigo
-    'cell_type':'gru',
+    'patience': 20,        
+    'cell_type':'lstm', 
     'bidirectional':True,
     'use_attention':True,
-    'model_type':'GRU_Bi_Attention',
+    'model_type':'LSTM_Bi_Attention_PAZ',
     'device': torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 }
 
@@ -103,7 +104,7 @@ def main():
     # A. FIT + TRANSFORM no Treino (Aprende a escala aqui!)
     df_train = preprocessor.fit(df_train_raw).transform(df_train_raw)
     preprocessor.save_scalers(output_dir='.')
-    
+
     # B. TRANSFORM na Validação e Teste (Usa a escala do Treino)
     # Importante: Não damos fit aqui para evitar vazamento de dados (Data Leakage)
     df_val = preprocessor.transform(df_val_raw)

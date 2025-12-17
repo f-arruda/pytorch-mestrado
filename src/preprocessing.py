@@ -104,6 +104,22 @@ class SolarPreprocessor(BaseEstimator, TransformerMixin):
 
         df = self._handle_missing_values(df)
         return df
+    
+    def load_scalers(self, input_dir):
+        """Carrega scalers salvos para reutilizar a normalização do treino."""
+        # Procura pelos arquivos na pasta indicada
+        scaler_x_path = os.path.join(input_dir, 'scaler_X.pkl')
+        scaler_y_path = os.path.join(input_dir, 'scaler_Y.pkl')
+        
+        if not os.path.exists(scaler_x_path) or not os.path.exists(scaler_y_path):
+            raise FileNotFoundError(f"Scalers não encontrados em {input_dir}. Certifique-se de que scaler_X.pkl e scaler_Y.pkl estão lá.")
+            
+        self.scaler_x = joblib.load(scaler_x_path)
+        self.scaler_y = joblib.load(scaler_y_path)
+        
+        # O segredo: marca como 'fitado' para o sklearn permitir o transform
+        self._is_fitted = True 
+        print(f"♻️ Scalers carregados com sucesso de: {input_dir}")
 
     def save_scalers(self, output_dir):
         """Salva os scalers em disco para uso posterior (análise)."""
