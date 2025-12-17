@@ -27,7 +27,6 @@ EXPERIMENTS_DIRS = [
 ]
 
 # Nome da pasta onde salvar os gráficos comparativos finais
-OUTPUT_COMPARISON_DIR = "experiments/Analise_Comparativa_Final"
 
 # ==========================================
 # FUNÇÕES AUXILIARES DE CARREGAMENTO
