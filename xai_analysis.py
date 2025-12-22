@@ -190,7 +190,7 @@ def main():
             global_imp = xai.compute_global_feature_importance(full_loader)
             
             # USO DA FUNÇÃO SEGURA
-            safe_feats = get_safe_features(global_imp, dataset.data_input)
+            safe_feats = get_safe_features(global_imp, feature_cols)
             xai.plot_global_importance(global_imp, safe_feats, save_path=os.path.join(save_folder, '1_Global_Importance.png'))
             
             # ANÁLISE 2: Temporal
@@ -198,7 +198,7 @@ def main():
             temporal_map = xai.compute_temporal_importance(full_loader, target_step_idx=0, max_samples=500)
             
             # USO DA FUNÇÃO SEGURA
-            safe_feats = get_safe_features(temporal_map, dataset.data_input)
+            safe_feats = get_safe_features(temporal_map, feature_cols)
             xai.plot_temporal_profile(temporal_map, safe_feats, save_path=os.path.join(save_folder, '2_Temporal_Profile.png'))
 
             # ANÁLISE 3: Física
@@ -226,12 +226,12 @@ def main():
                 
                 if loader_clear:
                     map_clear = xai.compute_temporal_importance(loader_clear, target_step_idx=0)
-                    safe_feats = get_safe_features(map_clear, dataset.data_input)
+                    safe_feats = get_safe_features(map_clear, feature_cols)
                     xai.plot_heatmap(map_clear, safe_feats, "Importância Média - Céu Claro", save_path=os.path.join(save_folder, '3a_Heatmap_Clear.png'))
                 
                 if loader_cloudy:
                     map_cloudy = xai.compute_temporal_importance(loader_cloudy, target_step_idx=0)
-                    safe_feats = get_safe_features(map_cloudy, dataset.data_input)
+                    safe_feats = get_safe_features(map_cloudy, feature_cols)
                     xai.plot_heatmap(map_cloudy, safe_feats, "Importância Média - Céu Nublado", save_path=os.path.join(save_folder, '3b_Heatmap_Cloudy.png'))
             else:
                 print("      ⚠️ Variável 'k' não encontrada. Pulando análise física.")
@@ -261,12 +261,12 @@ def main():
                     
                     # Explicação Local
                     map_best = xai.get_local_explanation(x_best)
-                    safe_feats = get_safe_features(map_best, dataset.data_input)
+                    safe_feats = get_safe_features(map_best, feature_cols)
                     xai.plot_heatmap(map_best, safe_feats, f"Melhor Caso (Erro: {errors[idx_best_rel]:.4f})", save_path=os.path.join(save_folder, '4a_Case_Best.png'))
 
                     x_worst = dataset[idx_worst_rel][0].unsqueeze(0)
                     map_worst = xai.get_local_explanation(x_worst)
-                    safe_feats = get_safe_features(map_worst, dataset.data_input)
+                    safe_feats = get_safe_features(map_worst, feature_cols)
                     xai.plot_heatmap(map_worst, safe_feats, f"Pior Caso (Erro: {errors[idx_worst_rel]:.4f})", save_path=os.path.join(save_folder, '4b_Case_Worst.png'))
                     
                     # ANÁLISE 5 e 6
@@ -281,7 +281,7 @@ def main():
                         feat_map = xai.collect_feature_weights(x_worst)
                         if feat_map is not None:
                             # Feature map geralmente vem como [Features, Tempo]
-                            safe_feats = get_safe_features(feat_map.T, dataset.data_input) # Transpõe para checar dimensão feature
+                            safe_feats = get_safe_features(feat_map.T, feature_cols) # Transpõe para checar dimensão feature
                             xai.plot_feature_weights(feat_map, feature_names=safe_feats, title="Feature Attention - Pior Caso", save_path=os.path.join(save_folder, '6_Feature_Attn_Worst.png'))
 
         except Exception as e:
