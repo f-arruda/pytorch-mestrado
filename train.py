@@ -32,23 +32,24 @@ except ImportError:
 
 # --- 1. Configurações e Hiperparâmetros ---
 CONFIG = {
-    'csv_path': 'data/base_teste.csv',
-    'target_col': 'Pot_BT',
-    'feature_cols': ['Pot_BT', 'cos_zenith', 'sin_azimuth'],   # ['Pot_BT', 'cos_zenith', 'sin_azimuth']  
-                                                               # ['Velocidade média do vento m/s', 'Temperatura ambiente °C',   
-                                                               #  'Umidade Relativa %']
+    'csv_path': 'data/pv0.csv',
+    'target_col': 'target',
+    'feature_cols': ['cos_zenith', 'sin_azimuth', 'fracao_difusa',
+                     'target', 'temp_amb', 'humidity', 'wind_speed'],   # ['Pot_BT', 'cos_zenith', 'sin_azimuth']  
+                                                               # ['Velocidade média do vento m/s', 'Temperatura ambiente °C', 'Umidade Relativa %']
     'input_seq_len': 24,    # n_past
     'output_seq_len': 1,   # n_fut
-    'hidden_sizes': [128, 64],
-    'dropout': 0.15,
-    'batch_size': 64,
+    'hidden_sizes': [300],
+    'dropout': 0.2,
+    'batch_size': 32,
     'epochs': 10000,        # Limite alto, controlado pelo Early Stopping
     'learning_rate': 0.001,
-    'patience': 20,        
+    'patience': 50,        
     'cell_type':'lstm', 
-    'bidirectional':True,
-    'use_attention':True,
-    'model_type':'LSTM_Bi_Attention_PAZ',
+    'bidirectional':False,
+    'use_attention':False,
+    'use_feature_attention':False,
+    'model_type':'EDLSTM_PAZTUVD',
     'device': torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 }
 
@@ -66,8 +67,25 @@ def main():
     # --- 2. Preparação dos Dados (Lógica de Divisão Customizada) ---
     print("⏳ Carregando dados brutos...")
     
-    # 1. Carregar CSV Bruto
-    df_raw = pd.read_csv(CONFIG['csv_path'], sep=',', index_col=0)
+    # 1. Carrega os dados brutos
+    df_raw = pd.read_csv(CONFIG['csv_path'])
+
+    # 2. LIMPEZA EXPLÍCITA (A Solução Simples)
+    print("🧹 Realizando limpeza prévia de duplicatas...")
+
+    # Garante que a coluna de data é datetime
+    df_raw['Date_Time'] = pd.to_datetime(df_raw['Date_Time'])
+
+    # Remove linhas onde a DATA é duplicada (mantém a primeira aparição)
+    df_raw = df_raw.drop_duplicates(subset=['Date_Time'], keep='first')
+
+    # Define como índice e ordena
+    df_raw = df_raw.set_index('Date_Time').sort_index()
+
+    # Verifica se sobrou alguma duplicata teimosa no índice
+    df_raw = df_raw[~df_raw.index.duplicated(keep='first')]
+
+    print(f"✅ Dados limpos! Total de linhas únicas: {len(df_raw)}")
     
     # Garante que temos a coluna Year e o índice DateTime
     # (Se o CSV já tiver 'Year', ótimo. Se não, derivamos do índice)
@@ -79,7 +97,7 @@ def main():
     # 2. Separar o Ano de Teste (Holdout - 2022)
     # df_teste: Será usado APENAS no final de tudo (não entra no loop de epochs)
     df_teste_raw = df_raw.loc[df_raw['Year'] == 2022].copy()
-    
+
     # 3. Separar o Período de Desenvolvimento (< 2022)
     df_periodo_dev = df_raw.loc[df_raw['Year'] < 2022].copy()
     
@@ -99,7 +117,24 @@ def main():
     print("⚙️ Aplicando Preprocessor...")
     
     # Instancia o Preprocessor
-    preprocessor = SolarPreprocessor(nominal_power=156.0, start_year=2018)
+    preprocessor = SolarPreprocessor(
+        latitude=-23.33, 
+        longitude=-46.44,
+        timezone='Etc/GMT+3',
+        nominal_power=156.0,
+        target_col='target', # Nome interno que queremos usar
+        start_year = 2018,
+        # AQUI ESTÁ O SEGREDO DO TESTE:
+        column_mapping={
+            'Date_Time': 'date_time',    # Mapeia sua coluna de tempo
+            'Irradiação Global horária(horizontal) kWh/m2': 'ghi',           # Mapeia irradiação
+            'Temperatura ambiente °C': 'temp_amb',     # Mapeia temperatura
+            'Umidade Relativa %': 'humidity',
+            'Velocidade média do vento m/s': 'wind_speed',  # Mapeia vento
+            'Pot_BT': 'target',    # Mapeia o alvo
+            'Irradiação Difusa horária kWh/m2': 'dhi',
+        }
+    )
     
     # A. FIT + TRANSFORM no Treino (Aprende a escala aqui!)
     df_train = preprocessor.fit(df_train_raw).transform(df_train_raw)
@@ -154,7 +189,8 @@ def main():
         cell_type=CONFIG['cell_type'],        # Teste com GRU
         bidirectional=CONFIG['bidirectional'],     # Seu teste Bidirecional
         use_attention=CONFIG['use_attention'],
-        dropout_prob=CONFIG['dropout']      # Seu teste com Atenção
+        dropout_prob=CONFIG['dropout'],      # Seu teste com Atenção
+        use_feature_attention=CONFIG['use_feature_attention']
     ).to(CONFIG['device'])
     
     # Função de Perda e Otimizador

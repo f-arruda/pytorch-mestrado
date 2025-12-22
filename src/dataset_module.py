@@ -17,7 +17,7 @@ class SolarEfficientDataset(Dataset):
         # 1. Converter para Float32 (Padrão PyTorch) e Numpy para velocidade máxima
         # Mantemos os dados brutos na memória (apenas uma cópia)
         self.data_input = torch.tensor(df[input_tag].values, dtype=torch.float32)
-        self.data_target = torch.tensor(df[['Pot_BT']].values, dtype=torch.float32)
+        self.data_target = torch.tensor(df[['target']].values, dtype=torch.float32)
         self.timestamps = df.index
         
         print("Calculando índices válidos... (Isso roda uma vez só)")
@@ -33,7 +33,7 @@ class SolarEfficientDataset(Dataset):
         n_total = len(df)
         
         # Converte colunas para numpy para checagem rápida
-        pot_bt = df['Pot_BT'].values
+        pot_bt = df['target'].values
         inputs = df[input_tag].values
         
         # Criação de máscaras booleanas (True/False) para todo o dataset de uma vez

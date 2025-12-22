@@ -16,17 +16,17 @@ from src.statistical_metrics import SolarStatisticalAnalyzer
 # ==========================================
 # CONFIGURAÇÃO
 # ==========================================
-CSV_PATH = 'data/base_teste.csv'
-SCALER_PATH = 'scaler_Y.pkl'
+CSV_PATH = 'data/pv0.csv'
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
+# Liste aqui os experimentos que deseja comparar
 EXPERIMENTS_DIRS = [
-    "experiments/2025-12-17_15-04-58_GRU_Bi_Attention",
-    "experiments/2025-12-17_15-54-04_LSTM_Bi_Attention",
-    "experiments/2025-12-17_16-19-56_LSTM_Bi_Attention_PAZ"
+    "experiments/2025-12-19_19-09-00_EDLSTM_PAZTUVD",
+    # Adicione outros aqui...
 ]
+
 OUTPUT_COMPARISON_DIR = "experiments/Analise_Comparativa_Final"
-DEFAULT_FEATURE_COLS = ['Velocidade média do vento m/s', 'Temperatura ambiente °C', 'Umidade Relativa %', 'Pot_BT', 'cos_zenith', 'sin_azimuth']
+DEFAULT_FEATURE_COLS = ['temp_amb', 'wind_speed', 'humidity', 'target', 'cos_zenith', 'sin_azimuth']
 
 # ==========================================
 # FUNÇÕES AUXILIARES
@@ -41,7 +41,7 @@ def safe_parse_config(config):
         if key in parsed: parsed[key] = float(parsed[key])
     for key in ['input_seq_len', 'output_seq_len', 'input_size', 'epochs']:
         if key in parsed: parsed[key] = int(parsed[key])
-    for key in ['bidirectional', 'use_attention']:
+    for key in ['bidirectional', 'use_attention', 'use_feature_attention']:
         if key in parsed:
             val = parsed[key]
             parsed[key] = val.lower() == 'true' if isinstance(val, str) else bool(val)
@@ -54,26 +54,29 @@ def load_experiment_config(exp_dir):
     with open(config_path, 'r') as f:
         return safe_parse_config(json.load(f))
 
-def load_test_data(csv_path):
-    print("⏳ Carregando dados de teste...")
-    df = pd.read_csv(csv_path, index_col=0)
-    if not pd.api.types.is_datetime64_any_dtype(df.index):
-        df.index = pd.to_datetime(df.index)
-    if 'Year' not in df.columns: df['Year'] = df.index.year
-    df_test_raw = df[df['Year'] == 2022].copy()
+def load_test_data(csv_path, preprocessor):
+    print(f"⏳ Carregando dados de teste: {csv_path}")
+    df_raw = pd.read_csv(csv_path)
     
-    preprocessor = SolarPreprocessor(nominal_power=156.0)
-    try:
-        preprocessor.load_scalers(input_dir='.')
-    except FileNotFoundError:
-        print("⚠️ Scalers não encontrados na raiz.")
-        raise
-    df_test_processed = preprocessor.transform(df_test_raw)
-    return df_test_raw, df_test_processed
+    # --- BLOCO DE LIMPEZA OBRIGATÓRIO ---
+    if 'Date_Time' in df_raw.columns:
+        df_raw['Date_Time'] = pd.to_datetime(df_raw['Date_Time'])
+        # Remove duplicatas antes de virar índice
+        df_raw = df_raw.drop_duplicates(subset=['Date_Time'], keep='first')
+        df_raw = df_raw.set_index('Date_Time').sort_index()
+    
+    # Trava final de segurança
+    df_raw = df_raw[~df_raw.index.duplicated(keep='first')]
+    # ------------------------------------
 
-def reconstruct_dataframe(y_pred, y_true, dataset, df_raw, df_processed, output_seq_len):
+    # O preprocessor já deve estar carregado (fitted) ao entrar aqui
+    df_processed = preprocessor.transform(df_raw)
+    
+    return df_raw, df_processed
+    
+def reconstruct_dataframe(y_pred, y_true, dataset, df_raw, df_processed, output_seq_len, scaler_y):
     """
-    Reconstrói DataFrame e converte TUDO para kW para o Skill Score funcionar.
+    Reconstrói DataFrame e converte TUDO para kW.
     """
     valid_indices = dataset.valid_indices
     records = []
@@ -81,7 +84,14 @@ def reconstruct_dataframe(y_pred, y_true, dataset, df_raw, df_processed, output_
     for i, idx in enumerate(valid_indices):
         pred_seq = y_pred[i]
         true_seq = y_true[i]
+
+        # --- CORREÇÃO DO ERRO DIM 3 ---
+        # Garante que as sequências são 1D (vetores chatos) e não (24, 1)
+        if pred_seq.ndim > 1: pred_seq = pred_seq.flatten()
+        if true_seq.ndim > 1: true_seq = true_seq.flatten()
+        # ------------------------------
         
+        # Metadata futuro
         future_metadata = df_raw.iloc[idx : idx + output_seq_len]
         future_processed = df_processed.iloc[idx : idx + output_seq_len]
         
@@ -91,17 +101,22 @@ def reconstruct_dataframe(y_pred, y_true, dataset, df_raw, df_processed, output_
                 row_raw = future_metadata.iloc[h]
                 row_proc = future_processed.iloc[h]
                 
-                # Pega a Persistência P1 (ou P2, P3 se o horizonte fosse maior)
+                # Pega a Persistência (Normalizada)
                 p_col = f"P{h+1}"
-                val_persistencia = row_proc[p_col] if p_col in row_proc else np.nan
+                val_persistencia_norm = row_proc[p_col] if p_col in row_proc else 0.0
                 
-                # --- CORREÇÃO DE UNIDADES (Tudo para kW) ---
-                # 1. scaler_y inverte para a escala 0-1 (Potencia Normalizada)
-                # 2. Multiplicamos por 156.0 para voltar para kW
+                # --- DESNORMALIZAÇÃO ---
+                # Agora true_seq[h] é um escalar, então [[scalar]] cria uma matriz (1, 1) correta (dim=2)
+                obs_rel = scaler_y.inverse_transform([[true_seq[h]]])[0][0]
+                pred_rel = scaler_y.inverse_transform([[pred_seq[h]]])[0][0]
+                pers_rel = scaler_y.inverse_transform([[val_persistencia_norm]])[0][0]
                 
-                obs_kw = true_seq[h] * 156.0
-                pred_kw = pred_seq[h] * 156.0
-                pers_kw = val_persistencia * 156.0
+                # 2. Multiplica pela Potência Nominal (Escala Relativa -> kW)
+                PNOM = 156.0 
+                
+                obs_kw = obs_rel * PNOM
+                pred_kw = pred_rel * PNOM
+                pers_kw = pers_rel * PNOM
 
                 records.append({
                     'Timestamp': timestamp,
@@ -119,8 +134,38 @@ def reconstruct_dataframe(y_pred, y_true, dataset, df_raw, df_processed, output_
 # MAIN
 # ==========================================
 def main():
-    df_raw, df_processed = load_test_data(CSV_PATH)
-    scaler_y = joblib.load(SCALER_PATH)
+    # 1. Instancia o Preprocessor
+    preprocessor = SolarPreprocessor(
+        latitude=-15.60,
+        longitude=-47.70,
+        timezone='Etc/GMT+3',
+        nominal_power=156.0,
+        target_col='Pot_BT',
+        column_mapping={
+            'Pot_BT': 'target',
+            'Irradiação Global horária(horizontal) kWh/m2': 'ghi',
+            'Irradiação Difusa horária kWh/m2': 'dhi',
+            'Irradiação Global horária(Inclinada 27°) kWh/m2': 'irrad_poa',
+            'Temperatura ambiente °C': 'temp_amb',
+            'Umidade Relativa %': 'humidity',
+            'Velocidade média do vento m/s': 'wind_speed'
+        }
+    )
+
+    # 2. Carrega os Scalers (Essencial para não dar erro de Fit)
+    # Tenta carregar do diretório atual
+    SCALER_DIR = "." 
+    
+    try:
+        print(f"♻️ Carregando scalers de: {os.path.abspath(SCALER_DIR)}")
+        preprocessor.load_scalers(SCALER_DIR)
+    except FileNotFoundError:
+        print(f"❌ ERRO: Não encontrei 'scaler_X.pkl' e 'scaler_Y.pkl' na pasta raiz: {os.path.abspath(SCALER_DIR)}")
+        print("Certifique-se que os arquivos .pkl gerados no treino estão na mesma pasta do script.")
+        return
+
+    # 3. Carrega Dados
+    df_raw, df_processed = load_test_data(CSV_PATH, preprocessor)
     
     all_results = []
     print(f"\n📂 Avaliando {len(EXPERIMENTS_DIRS)} experimentos...\n")
@@ -133,31 +178,41 @@ def main():
             model_name = config.get('model_type', os.path.basename(exp_dir))
             feature_cols = config.get('feature_cols', DEFAULT_FEATURE_COLS)
             
+            # Filtra colunas que realmente existem no df_processed
+            valid_cols = [c for c in feature_cols if c in df_processed.columns]
+            if len(valid_cols) != len(feature_cols):
+                print(f"⚠️ Aviso: Ajustando feature_cols. Faltando: {set(feature_cols) - set(valid_cols)}")
+            
             print(f"🔹 {model_name}")
 
             # Dataset
             test_dataset = SolarEfficientDataset(
                 df_processed, 
-                input_tag=feature_cols, 
+                input_tag=config['feature_cols'],  # MUDANÇA: Usando 'feature_cols' que é o nome correto no init do Dataset
                 n_past=config['input_seq_len'], 
-                n_future=config['output_seq_len']
+                n_future=config['output_seq_len'],
             )
             test_loader = DataLoader(test_dataset, batch_size=256, shuffle=False)
 
             # Modelo
             model = EncDecModel(
-                input_size=len(feature_cols),
+                input_size=len(valid_cols),
                 hidden_sizes=config['hidden_sizes'],
                 output_seq_len=config['output_seq_len'],
                 output_dim=1,
                 cell_type=config.get('cell_type', 'lstm'),
                 bidirectional=config.get('bidirectional', False),
                 use_attention=config.get('use_attention', False),
-                dropout_prob=config.get('dropout', 0.0) 
+                dropout_prob=config.get('dropout', 0.0) ,
+                use_feature_attention=config.get('use_feature_attention', False)
             ).to(DEVICE)
             
-            # Pesos
-            model.load_state_dict(torch.load(os.path.join(exp_dir, 'best_model.pt'), map_location=DEVICE))
+            # Carrega Pesos
+            weights_path = os.path.join(exp_dir, 'best_model.pth')
+            if not os.path.exists(weights_path):
+                 weights_path = os.path.join(exp_dir, 'best_model.pt') # Tenta extensão alternativa
+            
+            model.load_state_dict(torch.load(weights_path, map_location=DEVICE))
             model.eval()
             
             # Inferência
@@ -168,17 +223,16 @@ def main():
                     preds.append(out.cpu().numpy())
                     targets.append(y.numpy())
             
-            # Reconstrução
+            if not preds: continue
+
             y_pred = np.concatenate(preds, axis=0)
             y_true = np.concatenate(targets, axis=0)
             
-            N, T, _ = y_pred.shape
-            # Inversão do Scaler (retorna 0 a 1)
-            y_pred_inv = scaler_y.inverse_transform(y_pred.reshape(-1, 1)).reshape(N, T)
-            y_true_inv = scaler_y.inverse_transform(y_true.reshape(-1, 1)).reshape(N, T)
-            
-            # Reconstroi e converte para kW
-            df_model = reconstruct_dataframe(y_pred_inv, y_true_inv, test_dataset, df_raw, df_processed, config['output_seq_len'])
+            # Reconstrução (Passando scaler_y do preprocessor)
+            df_model = reconstruct_dataframe(
+                y_pred, y_true, test_dataset, df_raw, df_processed, 
+                config['output_seq_len'], preprocessor.scaler_y
+            )
             
             if not df_model.empty:
                 df_model['Modelo'] = model_name
@@ -186,7 +240,9 @@ def main():
                 print("   ✅ OK")
 
         except Exception as e:
-            print(f"   ❌ Erro: {e}")
+            print(f"   ❌ Erro ao processar {exp_dir}: {e}")
+            import traceback
+            traceback.print_exc()
 
     if not all_results:
         print("Nenhum resultado gerado.")

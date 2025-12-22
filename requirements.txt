@@ -4,3 +4,5 @@ torchinfo
 captum
 codecarbon
 SkillMetrics
+pvlib
+scipy

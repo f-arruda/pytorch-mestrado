@@ -1,0 +1,9 @@
+{
+    "Best Val RMSE": "0.05367035158152621",
+    "Epochs Trained": "80",
+    "Total Training Time": "00:05:57.62",
+    "Total Seconds": "357.62",
+    "CO2_Emissions_kg": "0.0022803456346001975",
+    "Energy_Consumed_kWh": "0.00783319753703956",
+    "Country_ISO": "CHL"
+}

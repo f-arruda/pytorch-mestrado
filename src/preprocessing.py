@@ -1,203 +1,312 @@
 import pandas as pd
 import numpy as np
 import os
-import joblib  # <--- Importante para salvar
+import joblib
+import warnings
+from typing import Optional, Dict, List, Tuple
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.preprocessing import MinMaxScaler
-import warnings
+from scipy.optimize import curve_fit
 
-# Ignorar avisos de chained assignment
+# Tenta importar pvlib
+try:
+    import pvlib
+except ImportError:
+    raise ImportError("A biblioteca 'pvlib' é obrigatória. Instale: pip install pvlib")
+
 warnings.filterwarnings('ignore')
+
+# --- CONSTANTES GLOBAIS ---
+CONSTANTS = {
+    'G_STC': 1000.0,
+    'T_STC': 25.0,
+    'GAMMA_SI': 0.0045,
+    'U0_BOUNDS': (23.5, 26.5), 
+    'U1_BOUNDS': (6.25, 7.68),
+    'DEFAULT_U0': 25.0,
+    'DEFAULT_U1': 6.84
+}
+
+# Mapeamento Padrão
+DEFAULT_MAPPING = {
+    'Temperatura ambiente °C': 'temp_amb',
+    'Velocidade média do vento m/s': 'wind_speed',
+    'ghi': 'ghi',
+    'Pot_BT': 'target',
+    'Irradiação Global horária(Inclinada 27°) kWh/m2': 'irrad_poa',
+    'Umidade Relativa %': 'humidity',
+    'Year': 'year',
+    'Date_Time': 'date_time',
+    'dhi': 'dhi',
+    'dni': 'dni',
+    'zenith': 'zenith',
+    'azimuth': 'azimuth'
+}
 
 class SolarPreprocessor(BaseEstimator, TransformerMixin):
     def __init__(self, 
-                 nominal_power=156.0, 
-                 start_year=2018,
-                 degradation_rate=0.05,
-                 features_to_scale=None,
-                 target_col='Pot_BT'): # <--- Definimos explicitamente o alvo
-        """
-        Classe para limpeza e engenharia de features de dados solares.
-        """
+                 latitude: float, 
+                 longitude: float, 
+                 altitude: float = 0, 
+                 timezone: str = 'UTC', 
+                 nominal_power: float = 156.0, 
+                 start_year: int = 2018,
+                 degradation_rate: float = 0.05,
+                 column_mapping: Optional[Dict[str, str]] = None,
+                 features_to_scale: Optional[List[str]] = None,
+                 target_col: str = 'target',
+                 auto_identify_thermal_params: bool = True):
+        
+        self.latitude = latitude
+        self.longitude = longitude
+        self.altitude = altitude
+        self.timezone = timezone
+        self.location = pvlib.location.Location(latitude, longitude, timezone, altitude)
+        
         self.nominal_power = nominal_power
         self.start_year = start_year
         self.degradation_rate = degradation_rate
-        self.target_col = target_col
         
-        # Constantes Físicas
-        self.U0 = 25.0
-        self.U1 = 6.84
-        self.Pstc = 156000.0
-        self.Gstc = 1000.0
-        self.Tstc = 25.0
-        self.gamma = 0.0045
+        self.column_mapping = DEFAULT_MAPPING.copy()
+        if column_mapping:
+            self.column_mapping.update(column_mapping)
+            
+        self.target_col_internal = self.column_mapping.get(target_col, 'target')
+        self.features_to_scale = features_to_scale or ['temp_amb', 'wind_speed', 'ghi']
         
-        self.features_to_scale = features_to_scale or [
-            'Temperatura ambiente °C', 
-            'Velocidade média do vento m/s', 
-            'Temp'
-        ]
-        
-        # --- MUDANÇA: Dois Scalers Separados ---
-        # scaler_x: Para as variáveis de entrada (multivariado)
-        # scaler_y: EXCLUSIVO para o target (univariado) -> Crucial para inverse_transform depois
         self.scaler_x = MinMaxScaler(feature_range=(0, 1))
         self.scaler_y = MinMaxScaler(feature_range=(0, 1))
-        
+        self.u0 = CONSTANTS['DEFAULT_U0']
+        self.u1 = CONSTANTS['DEFAULT_U1']
+        self.auto_identify = auto_identify_thermal_params
         self._is_fitted = False
 
-    def fit(self, X, y=None):
-        """Aprende os parâmetros de normalização."""
-        # 1. Faz uma cópia e aplica engenharia básica para ter as colunas calculadas (se necessário)
-        # Nota: O fit deve aprender com os dados JÁ processados ou brutos? 
-        # Geralmente aprendemos com os dados brutos ou parcialmente processados.
-        # Aqui vamos simplificar: O fit aprende nas colunas que existirem no X passado.
+    def _rename_columns(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Renomeia colunas usando o mapeamento."""
+        rename_dict = {k: v for k, v in self.column_mapping.items() if k in df.columns}
+        return df.rename(columns=rename_dict)
+
+    def _ensure_datetime_index(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Garante índice temporal, trata fuso e remove duplicatas."""
+        df = df.copy()
         
-        # Fit nas Features (X)
-        if self.features_to_scale:
-            cols_exist = [c for c in self.features_to_scale if c in X.columns]
-            if cols_exist:
-                self.scaler_x.fit(X[cols_exist])
+        # 1. Identificar coluna de data
+        col_data = None
+        possible_names = ['date_time', 'Date_Time', 'Date', 'data', 'datetime']
+        inv_map = {v: k for k, v in self.column_mapping.items()}
+        if 'date_time' in inv_map: possible_names.insert(0, inv_map['date_time'])
+
+        for col in possible_names:
+            if col in df.columns:
+                col_data = col
+                break
         
-        # Fit no Target (Y)
-        # Atenção: Precisamos fitar o scaler_y nos dados JÁ normalizados pela potência nominal?
-        # A sua lógica divide por 156. Se dividirmos por 156, o valor fica entre 0 e 1.
-        # O MinMaxScaler vai aprender min=0 e max=~1. Isso funciona bem.
-        # Se a coluna target existir, fitamos nela.
-        if self.target_col in X.columns:
-            # Precisamos simular a normalização de potência nominal antes de fitar o scaler
-            # ou fitar nos dados brutos e deixar o scaler fazer todo o trabalho.
-            # PARA MANTER SUA LÓGICA DE DIVISÃO POR 156: 
-            # Vamos fitar o scaler nos valores brutos divididos por 156.
+        # Se achou coluna, define como index
+        if col_data and not pd.api.types.is_datetime64_any_dtype(df.index):
+            df[col_data] = pd.to_datetime(df[col_data], errors='coerce')
+            df.set_index(col_data, inplace=True)
+        
+        # Converte índice se não for datetime ainda
+        if not pd.api.types.is_datetime64_any_dtype(df.index):
+            try:
+                df.index = pd.to_datetime(df.index, errors='coerce')
+            except:
+                pass
+
+        # 2. Remover NaT antes do fuso
+        if df.index.isna().any():
+            df = df[df.index.notna()]
+
+        # 3. Tratamento de Fuso Horário
+        try:
+            if df.index.tz is None:
+                df.index = df.index.tz_localize(self.timezone, ambiguous='NaT', nonexistent='NaT')
+            else:
+                df.index = df.index.tz_convert(self.timezone)
+        except Exception as e:
+            print(f"⚠️ Erro Fuso: {e}")
+
+        # 4. Limpeza Final (Remove Duplicatas geradas por fuso ou originais)
+        # Remove NaTs gerados pelo fuso
+        if df.index.isna().any():
+            df = df[df.index.notna()]
+
+        # Remove duplicatas explicitamente
+        if df.index.duplicated().any():
+            print(f"⚠️ Removendo {df.index.duplicated().sum()} duplicatas no índice.")
+            df = df[~df.index.duplicated(keep='first')]
             
-            target_values = X[[self.target_col]].copy()
-            target_values = target_values / self.nominal_power # Aplica sua lógica base
+        return df.sort_index()
+
+    def _fit_thermal_parameters(self, df: pd.DataFrame):
+        """Otimiza U0 e U1. Inclui trava de segurança contra duplicatas."""
+        required = [self.target_col_internal, 'ghi', 'temp_amb', 'wind_speed']
+        if not all(col in df.columns for col in required):
+            return
+
+        # --- TRAVA DE SEGURANÇA CRÍTICA ---
+        # Garante que não existem duplicatas antes da operação matemática
+        df = df.loc[~df.index.duplicated(keep='first')].copy()
+        df = df.sort_index()
+        # ----------------------------------
+
+        # Filtra dados de sol pleno
+        try:
+            mask = (df['ghi'] > 300) & (df[self.target_col_internal] > 0) & (df['wind_speed'] >= 0)
+            df_fit = df.loc[mask].dropna()
+        except ValueError as e:
+            print(f"⚠️ Erro de índice duplicado no fit: {e}. Pulando otimização.")
+            return
+
+        if len(df_fit) < 50: return
+
+        def physical_power_model(X, u0, u1):
+            ghi, temp, wind = X
+            term_vento = u0 + u1 * wind
+            t_cell = temp + (ghi / term_vento)
+            efficiency_loss = 1 - CONSTANTS['GAMMA_SI'] * (t_cell - CONSTANTS['T_STC'])
+            return self.nominal_power * (ghi / CONSTANTS['G_STC']) * efficiency_loss
+
+        X_data = (df_fit['ghi'].values, df_fit['temp_amb'].values, df_fit['wind_speed'].values)
+        Y_data = df_fit[self.target_col_internal].values
+
+        try:
+            bounds = ([CONSTANTS['U0_BOUNDS'][0], CONSTANTS['U1_BOUNDS'][0]], 
+                      [CONSTANTS['U0_BOUNDS'][1], CONSTANTS['U1_BOUNDS'][1]])
             
-            # Fita o scaler nesses valores já pré-processados
-            self.scaler_y.fit(target_values)
+            popt, _ = curve_fit(physical_power_model, X_data, Y_data, 
+                                p0=[self.u0, self.u1], bounds=bounds, method='trf')
+            self.u0, self.u1 = popt
+            print(f"🌡️  U0={self.u0:.2f}, U1={self.u1:.2f}")
+        except:
+            pass
+
+    def fit(self, X: pd.DataFrame, y=None):
+        df = X.copy()
+        df = self._rename_columns(df)
+        df = self._ensure_datetime_index(df) # Limpa duplicatas aqui
+
+        if self.auto_identify:
+            self._fit_thermal_parameters(df) # E limpa de novo dentro, por segurança
+
+        cols_x = [c for c in self.features_to_scale if c in df.columns]
+        if cols_x: self.scaler_x.fit(df[cols_x])
+            
+        if self.target_col_internal in df.columns:
+            target_norm = df[[self.target_col_internal]] / self.nominal_power
+            self.scaler_y.fit(target_norm)
 
         self._is_fitted = True
         return self
 
-    def transform(self, X):
-        """Aplica as transformações."""
-        df = X.copy()
+    def transform(self, X: pd.DataFrame) -> pd.DataFrame:
+        if not self._is_fitted: raise RuntimeError("Fit necessário antes do Transform.")
         
-        # 1 a 5: Engenharia de Features (Física, Lags, etc)
+        df = X.copy()
+        df = self._rename_columns(df)
+        df = self._ensure_datetime_index(df)
+
         df = self._clean_index(df)
+        df = self._calculate_solar_position(df)
         df = self._calculate_physics_features(df)
         df = self._create_lag_features(df)
         df = self._create_angular_features(df)
-        df = self._apply_custom_normalization(df) # Aqui divide Pot_BT por 156
+        df = self._apply_normalizations(df)
         
-        # 6. Normalização Sklearn (MinMax) nas Features
-        cols_exist = [c for c in self.features_to_scale if c in df.columns]
-        if cols_exist:
-            df[cols_exist] = self.scaler_x.transform(df[cols_exist])
+        cols_x = [c for c in self.features_to_scale if c in df.columns]
+        if cols_x: df[cols_x] = self.scaler_x.transform(df[cols_x])
             
-        # 7. Normalização Sklearn no Target (Opcional, mas bom para garantir 0-1)
-        # Como já dividimos por 156, o valor já está quase em 0-1.
-        # O scaler_y aqui vai apenas garantir o range exato se necessário,
-        # mas sua principal função será ser salvo para o inverse_transform depois.
-        if self.target_col in df.columns:
-            df[[self.target_col]] = self.scaler_y.transform(df[[self.target_col]])
+        if self.target_col_internal in df.columns:
+            df[[self.target_col_internal]] = self.scaler_y.transform(df[[self.target_col_internal]])
 
-        df = self._handle_missing_values(df)
-        return df
-    
-    def load_scalers(self, input_dir):
-        """Carrega scalers salvos para reutilizar a normalização do treino."""
-        # Procura pelos arquivos na pasta indicada
-        scaler_x_path = os.path.join(input_dir, 'scaler_X.pkl')
-        scaler_y_path = os.path.join(input_dir, 'scaler_Y.pkl')
-        
-        if not os.path.exists(scaler_x_path) or not os.path.exists(scaler_y_path):
-            raise FileNotFoundError(f"Scalers não encontrados em {input_dir}. Certifique-se de que scaler_X.pkl e scaler_Y.pkl estão lá.")
-            
-        self.scaler_x = joblib.load(scaler_x_path)
-        self.scaler_y = joblib.load(scaler_y_path)
-        
-        # O segredo: marca como 'fitado' para o sklearn permitir o transform
-        self._is_fitted = True 
-        print(f"♻️ Scalers carregados com sucesso de: {input_dir}")
+        return df.fillna(0)
 
-    def save_scalers(self, output_dir):
-        """Salva os scalers em disco para uso posterior (análise)."""
-        if not os.path.exists(output_dir):
-            os.makedirs(output_dir)
-            
-        # Salva o Scaler X
-        joblib.dump(self.scaler_x, os.path.join(output_dir, 'scaler_X.pkl'))
-        
-        # Salva o Scaler Y (CRUCIAL PARA O SCALLER_Y QUE VOCÊ PERGUNTOU)
-        joblib.dump(self.scaler_y, os.path.join(output_dir, 'scaler_Y.pkl'))
-        
-        print(f"💾 Scalers salvos em: {output_dir}")
-
-    # --- MÉTODOS PRIVADOS (Mantidos do seu código) ---
     def _clean_index(self, df):
-        df = df.loc[(df['Year'] >= self.start_year)].copy()
-        if not pd.api.types.is_datetime64_any_dtype(df.index):
-            if 'Date_Time' in df.columns:
-                df['Date_Time'] = pd.to_datetime(df['Date_Time'])
-                df.set_index('Date_Time', inplace=True)
-            else:
-                df.index = pd.to_datetime(df.index)
-        df = df[~df.index.duplicated(keep='first')]
+        """Filtra ano usando coluna auxiliar (Robustez)."""
+        df['__ano_temp'] = df.index.year
+        df = df.loc[df['__ano_temp'] >= self.start_year].copy()
+        df.drop(columns=['__ano_temp'], inplace=True)
         return df.sort_index()
 
+    def _calculate_solar_position(self, df):
+        solpos = self.location.get_solarposition(df.index)
+        df['zenith'] = solpos['zenith']
+        df['azimuth'] = solpos['azimuth']
+        df['extra_rad'] = pvlib.irradiance.get_extra_radiation(df.index)
+        cs = self.location.get_clearsky(df.index, model='ineichen')
+        df['ghi_cs_theo'] = cs['ghi']
+        df['dhi_cs_theo'] = cs['dhi']
+        return df
+
     def _calculate_physics_features(self, df):
-        term_vento = self.U0 + self.U1 * df['Velocidade média do vento m/s']
-        df['Temperatura celula'] = df['Temperatura ambiente °C'] + (df['ghi'] / term_vento)
-        fator_temp = 1 - self.gamma * (df['Temperatura celula'] - self.Tstc)
-        df['Pot_cs'] = self.Pstc * (df['ghi'] / self.Gstc) * fator_temp / 1000.0
+        required = ['temp_amb', 'wind_speed', 'ghi']
+        if not all(col in df.columns for col in required):
+            if self.target_col_internal in df.columns:
+                df['k'] = df[self.target_col_internal] / self.nominal_power
+            return df
+
+        term_vento = self.u0 + self.u1 * df['wind_speed']
+        term_vento = term_vento.replace(0, 0.1) 
+        df['temp_cell'] = df['temp_amb'] + (df['ghi'] / term_vento)
         
-        df['k'] = df['Pot_BT'] / df['Pot_cs'].replace(0, np.nan)
-        df['k'] = df['k'].fillna(0)
-        df['k'] = df['k'].clip(upper=1.0)
+        efficiency_factor = 1 - CONSTANTS['GAMMA_SI'] * (df['temp_cell'] - CONSTANTS['T_STC'])
+        df['pot_cs'] = self.nominal_power * (df['ghi'] / CONSTANTS['G_STC']) * efficiency_factor
+        
+        if self.target_col_internal in df.columns:
+            denom = df['pot_cs'].replace(0, np.nan)
+            df['k'] = df[self.target_col_internal] / denom
+            df['k'] = df['k'].fillna(0).clip(upper=1.2)
         return df
 
     def _create_lag_features(self, df):
-        df['k_lag1'] = df['k'].shift(1)
-        df['k_lag2'] = df['k'].shift(2)
-        df['k_lag3'] = df['k'].shift(3)
-        
-        df['P1'] = df['Pot_cs'] * df['k_lag1']
-        df['P2'] = df['Pot_cs'] * df['k_lag2']
-        df['P3'] = df['Pot_cs'] * df['k_lag3']
-        
-        df.drop(['k_lag1', 'k_lag2', 'k_lag3'], axis=1, inplace=True)
+        if 'k' in df.columns:
+            for lag in [1, 2, 3]:
+                col = f'k_lag{lag}'
+                df[col] = df['k'].shift(lag)
+                if 'pot_cs' in df.columns:
+                    df[f'P{lag}'] = df['pot_cs'] * df[col]
+            df.drop([f'k_lag{i}' for i in [1,2,3]], axis=1, inplace=True, errors='ignore')
         return df
 
     def _create_angular_features(self, df):
-        df['cos_zenith']  = np.cos(np.deg2rad(df['zenith']))
-        df['sin_azimuth'] = np.sin(np.deg2rad(df['azimuth']))
+        if 'zenith' in df.columns: df['cos_zenith'] = np.cos(np.deg2rad(df['zenith']))
+        if 'azimuth' in df.columns: df['sin_azimuth'] = np.sin(np.deg2rad(df['azimuth']))
         return df
 
-    def _apply_custom_normalization(self, df):
-        # Normalizações gerais
-        df['Irrad/CeuClaro'] = df['Irradiação Global horária(Inclinada 27°) kWh/m2'] / df['ghi'].replace(0, np.nan)
-        df['Umidade Relativa %'] = df['Umidade Relativa %'] / 100.0
-        extra_rad = df['Extra Radiation'].replace(0, np.nan)
-        df['Irradiação Global horária(Inclinada 27°) kWh/m2'] = df['Irradiação Global horária(Inclinada 27°) kWh/m2'] / extra_rad
-        df['Irrad'] = df['Irrad'] / extra_rad
+    def _apply_normalizations(self, df):
+        # 1. Fração Difusa (Prioridade: Medido > Teórico)
+        if 'dhi' in df.columns and 'ghi' in df.columns:
+            df['fracao_difusa'] = np.where(df['ghi'] > 10, df['dhi']/df['ghi'], 0.0).clip(0, 1)
+        elif 'dhi_cs_theo' in df.columns and 'ghi_cs_theo' in df.columns:
+            df['fracao_difusa'] = np.where(df['ghi_cs_theo'] > 10, df['dhi_cs_theo']/df['ghi_cs_theo'], 0.0).clip(0, 1)
 
-        # Normalização pela potência nominal (Isso acontece ANTES do scaler)
-        cols_potencia = ['Pot_BT', 'P1', 'P2', 'P3', 'P']
-        for col in cols_potencia:
-            if col in df.columns:
-                df[col] = df[col] / self.nominal_power
-                
-        # Degradação
-        years_passed = (df['Year'] - self.start_year).clip(lower=0)
-        df['Degradacao'] = 1 - (self.degradation_rate * years_passed)
-        
+        if 'irrad_poa' in df.columns and 'ghi' in df.columns:
+            df['irr_clearsky_ratio'] = df['irrad_poa'] / df['ghi'].replace(0, np.nan)
+            df['irr_clearsky_ratio'] = df['irr_clearsky_ratio'].fillna(0)
+
+        if 'humidity' in df.columns: df['humidity'] = df['humidity'] / 100.0
+
+        cols_pot = [self.target_col_internal, 'P1', 'P2', 'P3']
+        for col in cols_pot:
+            if col in df.columns: df[col] = df[col] / self.nominal_power
+
+        if 'year' in df.columns:
+            years_passed = (df['year'] - self.start_year).clip(lower=0)
+            df['degradacao'] = 1 - (self.degradation_rate * years_passed)
         return df
 
-    def _handle_missing_values(self, df):
-        fill_neg_one = ['Pot_BT', 'Irrad', 'Temp']
-        for col in fill_neg_one:
-            if col in df.columns:
-                df[col] = df[col].replace([np.nan, np.inf, -np.inf], -1)
-        df.fillna(0, inplace=True)
-        return df
+    def save_scalers(self, output_dir: str):
+        os.makedirs(output_dir, exist_ok=True)
+        joblib.dump(self.scaler_x, os.path.join(output_dir, 'scaler_X.pkl'))
+        joblib.dump(self.scaler_y, os.path.join(output_dir, 'scaler_Y.pkl'))
+        print(f"💾 Scalers salvos em: {output_dir}")
+
+    def load_scalers(self, input_dir: str):
+        path_x = os.path.join(input_dir, 'scaler_X.pkl')
+        path_y = os.path.join(input_dir, 'scaler_Y.pkl')
+        if not (os.path.exists(path_x) and os.path.exists(path_y)):
+            raise FileNotFoundError(f"Scalers não encontrados em {input_dir}")
+        self.scaler_x = joblib.load(path_x)
+        self.scaler_y = joblib.load(path_y)
+        self._is_fitted = True
+        print(f"♻️  Scalers carregados de: {input_dir}")

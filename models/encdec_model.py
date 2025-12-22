@@ -6,12 +6,12 @@ from models.decoder_attention import AttentionDecoder
 class EncDecModel(nn.Module):
     def __init__(self, input_size, hidden_sizes, output_seq_len, output_dim=1, 
                  cell_type='lstm', use_attention=False, bidirectional = False,
-                 dropout_prob=0):
+                 dropout_prob=0, use_feature_attention=False):
         super(EncDecModel, self).__init__()
 
         self.use_attention=use_attention
 
-        self.encoder = Encoder(input_size, hidden_sizes, cell_type,bidirectional,dropout_prob)
+        self.encoder = Encoder(input_size, hidden_sizes, cell_type,bidirectional,dropout_prob,use_feature_attention=use_feature_attention)
 
         if use_attention:
             self.decoder = AttentionDecoder(hidden_sizes, output_seq_len, output_dim, cell_type,

@@ -1,8 +1,6 @@
 {
-    "image": "dl-pytorch-jupyter:v2",
+    "image": "dl-torch:latest",
     "name": "DL/ML Otimizado (NVIDIA NGC)",
-
-
 
     // Mantemos as otimizações de GPU no runArgs
     "runArgs": [

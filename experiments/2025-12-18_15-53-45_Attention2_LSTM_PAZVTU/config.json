@@ -1,0 +1,19 @@
+{
+    "csv_path": "data/base_teste.csv",
+    "target_col": "Pot_BT",
+    "feature_cols": "['Pot_BT', 'cos_zenith', 'sin_azimuth', 'Velocidade m\u00e9dia do vento m/s', 'Temperatura ambiente \u00b0C', 'Umidade Relativa %']",
+    "input_seq_len": "24",
+    "output_seq_len": "1",
+    "hidden_sizes": "[300]",
+    "dropout": "0.2",
+    "batch_size": "32",
+    "epochs": "10000",
+    "learning_rate": "0.001",
+    "patience": "50",
+    "cell_type": "lstm",
+    "bidirectional": "False",
+    "use_attention": "True",
+    "use_feature_attention": "True",
+    "model_type": "Attention2_LSTM_PAZVTU",
+    "device": "cuda"
+}
