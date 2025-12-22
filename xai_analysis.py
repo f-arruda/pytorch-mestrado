@@ -18,6 +18,7 @@ DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 EXPERIMENTS_DIRS = [
     "experiments/2025-12-19_19-09-00_EDLSTM_PAZTUVD"
+    # Adicione outros experimentos aqui
 ]
 
 OUTPUT_DIR = "experiments/Analise_XAI_Profunda"
@@ -54,7 +55,7 @@ def load_config_and_model(exp_dir):
     feature_cols = config.get('feature_cols', [])
     
     model = EncDecModel(
-        input_size=len(feature_cols),
+        input_size=len(feature_cols), 
         hidden_sizes=config['hidden_sizes'],
         output_seq_len=config['output_seq_len'],
         output_dim=1,
@@ -68,30 +69,35 @@ def load_config_and_model(exp_dir):
     if not os.path.exists(weights_path):
         weights_path = os.path.join(exp_dir, 'best_model.pt') 
         
-    model.load_state_dict(torch.load(weights_path, map_location=DEVICE))
+    # Carrega pesos com flexibilidade para evitar erros bobos de dimensão
+    try:
+        model.load_state_dict(torch.load(weights_path, map_location=DEVICE))
+    except RuntimeError as e:
+        print(f"⚠️ Aviso de shape nos pesos: {e}")
+        print("Tentando carregar com strict=False...")
+        model.load_state_dict(torch.load(weights_path, map_location=DEVICE), strict=False)
+
     model.eval()
-    
     return model, config
 
 def load_data(csv_path, feature_cols, n_past, n_future):
     print("⏳ Carregando e limpando dados...")
     df = pd.read_csv(csv_path)
     
-    # --- LIMPEZA AGRESSIVA DE DADOS (Igual ao script fix) ---
+    # --- LIMPEZA AGRESSIVA DE DADOS (Garante índice único) ---
     if 'Date_Time' in df.columns:
         df['Date_Time'] = pd.to_datetime(df['Date_Time'])
-        # Agrupa por data e pega o primeiro (Remove duplicatas forçadamente)
         df = df.groupby('Date_Time').first().reset_index()
         df = df.set_index('Date_Time').sort_index()
     
-    # Garante unicidade do índice
     df = df[~df.index.duplicated(keep='first')]
     # ----------------------------------
     
-    if 'Year' not in df.columns: df['Year'] = df.index.year
-    # Filtro de ano (Opcional: ajuste conforme sua necessidade)
-    # df_test = df[df['Year'] == 2022].copy()
-    df_test = df.copy() # Usando todo o dataset por enquanto
+    # Se quiser filtrar por ano, descomente abaixo:
+    # if 'Year' not in df.columns: df['Year'] = df.index.year
+    # df = df[df['Year'] == 2022].copy()
+    
+    df_test = df.copy() 
     
     preprocessor = SolarPreprocessor(
         latitude=-15.60, 
@@ -111,14 +117,14 @@ def load_data(csv_path, feature_cols, n_past, n_future):
         }
     )
     
-    # --- CORREÇÃO: CARREGA SCALERS DA RAIZ ---
-    SCALER_DIR = "." # Procura no diretório atual
+    # Carrega scalers da pasta raiz (onde você disse que eles estão)
+    SCALER_DIR = "." 
     try:
         print(f"♻️ Carregando scalers de: {os.path.abspath(SCALER_DIR)}")
         preprocessor.load_scalers(SCALER_DIR)
     except Exception as e:
         print(f"❌ ERRO CRÍTICO: Não encontrei scalers em {SCALER_DIR}.")
-        raise RuntimeError("Impossível rodar XAI sem os scalers originais (scaler_X.pkl, scaler_Y.pkl). Copie-os para a pasta raiz.")
+        raise RuntimeError("Impossível rodar XAI sem os scalers originais (scaler_X.pkl, scaler_Y.pkl).")
         
     df_proc = preprocessor.transform(df_test)
     
@@ -126,11 +132,30 @@ def load_data(csv_path, feature_cols, n_past, n_future):
     
     dataset = SolarEfficientDataset(
         df_proc, 
-        input_tag=valid_cols, 
+        input_tag=valid_cols, # Usa o nome correto do argumento
         n_past=n_past, 
         n_future=n_future,
     )
     return dataset, df_proc
+
+def get_safe_features(matrix, feature_names):
+    """
+    Função Auxiliar CRÍTICA:
+    Garante que a lista de nomes tenha o mesmo tamanho das colunas da matriz XAI.
+    Evita o erro 'IndexError: index 7 is out of bounds'.
+    """
+    if matrix is None: return feature_names
+    
+    # Se a matriz for 1D (ex: importância global), pega shape[0], se 2D (temporal) pega shape[1]
+    n_cols = matrix.shape[0] if matrix.ndim == 1 else matrix.shape[1]
+    
+    if len(feature_names) > n_cols:
+        # Corta nomes extras (geralmente o target que sobrou na lista)
+        return feature_names[:n_cols]
+    elif len(feature_names) < n_cols:
+        # Adiciona nomes genéricos se faltar
+        return feature_names + [f"Feat_{i}" for i in range(len(feature_names), n_cols)]
+    return feature_names
 
 # ================= MAIN XAI PIPELINE =================
 def main():
@@ -149,7 +174,7 @@ def main():
             model, config = load_config_and_model(exp_dir)
             feature_cols = config.get('feature_cols')
             
-            # Carrega dados (Scalers vêm da raiz agora)
+            # Carrega dados
             dataset, df_proc = load_data(
                 CSV_PATH, 
                 feature_cols, 
@@ -163,18 +188,22 @@ def main():
             # ANÁLISE 1: Global
             print("   📊 [1/6] Análise Global de Variáveis...")
             global_imp = xai.compute_global_feature_importance(full_loader)
-            xai.plot_global_importance(global_imp, dataset.data_input, save_path=os.path.join(save_folder, '1_Global_Importance.png'))
+            
+            # USO DA FUNÇÃO SEGURA
+            safe_feats = get_safe_features(global_imp, dataset.data_input)
+            xai.plot_global_importance(global_imp, safe_feats, save_path=os.path.join(save_folder, '1_Global_Importance.png'))
             
             # ANÁLISE 2: Temporal
             print("   ⏳ [2/6] Análise Temporal (Memória do Modelo)...")
             temporal_map = xai.compute_temporal_importance(full_loader, target_step_idx=0, max_samples=500)
-            xai.plot_temporal_profile(temporal_map, feature_cols, save_path=os.path.join(save_folder, '2_Temporal_Profile.png'))
+            
+            # USO DA FUNÇÃO SEGURA
+            safe_feats = get_safe_features(temporal_map, dataset.data_input)
+            xai.plot_temporal_profile(temporal_map, safe_feats, save_path=os.path.join(save_folder, '2_Temporal_Profile.png'))
 
             # ANÁLISE 3: Física
             print("   ☁️ [3/6] Análise por Condição de Céu...")
             if 'k' in df_proc.columns:
-                # Mapeia indices do DataFrame para índices do Dataset
-                # Pega índices onde k existe e é válido
                 k_values = df_proc['k'].values
                 indices_clear = np.where(k_values > 0.6)[0]
                 indices_cloudy = np.where(k_values < 0.3)[0]
@@ -183,15 +212,12 @@ def main():
                 def get_subset_loader(indices_condition, max_s=200):
                     common_indices = np.intersect1d(indices_condition, valid_indices_arr)
                     if len(common_indices) == 0: return None
-                    
                     if len(common_indices) > max_s: 
                         common_indices = np.random.choice(common_indices, max_s, replace=False)
-                    
                     dataset_indices = []
                     for idx in common_indices:
                         pos = np.where(valid_indices_arr == idx)[0]
                         if len(pos) > 0: dataset_indices.append(pos[0])
-                        
                     if not dataset_indices: return None
                     return DataLoader(Subset(dataset, dataset_indices), batch_size=32)
 
@@ -200,11 +226,13 @@ def main():
                 
                 if loader_clear:
                     map_clear = xai.compute_temporal_importance(loader_clear, target_step_idx=0)
-                    xai.plot_heatmap(map_clear, feature_cols, "Importância Média - Céu Claro", save_path=os.path.join(save_folder, '3a_Heatmap_Clear.png'))
+                    safe_feats = get_safe_features(map_clear, dataset.data_input)
+                    xai.plot_heatmap(map_clear, safe_feats, "Importância Média - Céu Claro", save_path=os.path.join(save_folder, '3a_Heatmap_Clear.png'))
                 
                 if loader_cloudy:
                     map_cloudy = xai.compute_temporal_importance(loader_cloudy, target_step_idx=0)
-                    xai.plot_heatmap(map_cloudy, feature_cols, "Importância Média - Céu Nublado", save_path=os.path.join(save_folder, '3b_Heatmap_Cloudy.png'))
+                    safe_feats = get_safe_features(map_cloudy, dataset.data_input)
+                    xai.plot_heatmap(map_cloudy, safe_feats, "Importância Média - Céu Nublado", save_path=os.path.join(save_folder, '3b_Heatmap_Cloudy.png'))
             else:
                 print("      ⚠️ Variável 'k' não encontrada. Pulando análise física.")
 
@@ -230,12 +258,16 @@ def main():
                     idx_worst_rel = np.argmax(errors)
                     
                     x_best = dataset[idx_best_rel][0].unsqueeze(0)
+                    
+                    # Explicação Local
                     map_best = xai.get_local_explanation(x_best)
-                    xai.plot_heatmap(map_best, feature_cols, f"Melhor Caso (Erro: {errors[idx_best_rel]:.4f})", save_path=os.path.join(save_folder, '4a_Case_Best.png'))
+                    safe_feats = get_safe_features(map_best, dataset.data_input)
+                    xai.plot_heatmap(map_best, safe_feats, f"Melhor Caso (Erro: {errors[idx_best_rel]:.4f})", save_path=os.path.join(save_folder, '4a_Case_Best.png'))
 
                     x_worst = dataset[idx_worst_rel][0].unsqueeze(0)
                     map_worst = xai.get_local_explanation(x_worst)
-                    xai.plot_heatmap(map_worst, feature_cols, f"Pior Caso (Erro: {errors[idx_worst_rel]:.4f})", save_path=os.path.join(save_folder, '4b_Case_Worst.png'))
+                    safe_feats = get_safe_features(map_worst, dataset.data_input)
+                    xai.plot_heatmap(map_worst, safe_feats, f"Pior Caso (Erro: {errors[idx_worst_rel]:.4f})", save_path=os.path.join(save_folder, '4b_Case_Worst.png'))
                     
                     # ANÁLISE 5 e 6
                     if config.get('use_attention', False):
@@ -248,7 +280,9 @@ def main():
                         print("   🧬 [6/6] Atenção de Variáveis...")
                         feat_map = xai.collect_feature_weights(x_worst)
                         if feat_map is not None:
-                            xai.plot_feature_weights(feat_map, feature_names=feature_cols, title="Feature Attention - Pior Caso", save_path=os.path.join(save_folder, '6_Feature_Attn_Worst.png'))
+                            # Feature map geralmente vem como [Features, Tempo]
+                            safe_feats = get_safe_features(feat_map.T, dataset.data_input) # Transpõe para checar dimensão feature
+                            xai.plot_feature_weights(feat_map, feature_names=safe_feats, title="Feature Attention - Pior Caso", save_path=os.path.join(save_folder, '6_Feature_Attn_Worst.png'))
 
         except Exception as e:
             print(f"❌ Erro ao processar {model_name}: {e}")
