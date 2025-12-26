@@ -13,15 +13,17 @@ from src.preprocessing import SolarPreprocessor
 from utils.xai import SolarXAIEngine
 
 # ================= CONFIGURAÇÃO =================
-CSV_PATH = 'data/pv0.csv' # Certifique-se que este é o arquivo limpo
+CSV_PATH = 'data/pv0.csv'
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
+# --- MUDANÇA: Aponta para trained_models ---
 EXPERIMENTS_DIRS = [
-    "experiments/2025-12-19_19-09-00_EDLSTM_PAZTUVD"
-    # Adicione outros experimentos aqui
+    "trained_models/2025-12-19_19-09-00_EDLSTM_PAZTUVD",
+    "trained_models/2025-12-26_19-36-01_2att_EDLSTM_Attention"
 ]
 
-OUTPUT_DIR = "experiments/Analise_XAI_Profunda"
+# --- MUDANÇA: Salva em analysis_outputs ---
+OUTPUT_DIR = "analysis_outputs/Analise_XAI_Profunda"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # ================= FUNÇÕES AUXILIARES =================
@@ -51,7 +53,6 @@ def load_config_and_model(exp_dir):
         raw_config = json.load(f)
     
     config = safe_parse_config(raw_config)
-    
     feature_cols = config.get('feature_cols', [])
     
     model = EncDecModel(
@@ -69,7 +70,6 @@ def load_config_and_model(exp_dir):
     if not os.path.exists(weights_path):
         weights_path = os.path.join(exp_dir, 'best_model.pt') 
         
-    # Carrega pesos com flexibilidade para evitar erros bobos de dimensão
     try:
         model.load_state_dict(torch.load(weights_path, map_location=DEVICE))
     except RuntimeError as e:
@@ -84,19 +84,12 @@ def load_data(csv_path, feature_cols, n_past, n_future):
     print("⏳ Carregando e limpando dados...")
     df = pd.read_csv(csv_path)
     
-    # --- LIMPEZA AGRESSIVA DE DADOS (Garante índice único) ---
     if 'Date_Time' in df.columns:
         df['Date_Time'] = pd.to_datetime(df['Date_Time'])
         df = df.groupby('Date_Time').first().reset_index()
         df = df.set_index('Date_Time').sort_index()
     
     df = df[~df.index.duplicated(keep='first')]
-    # ----------------------------------
-    
-    # Se quiser filtrar por ano, descomente abaixo:
-    # if 'Year' not in df.columns: df['Year'] = df.index.year
-    # df = df[df['Year'] == 2022].copy()
-    
     df_test = df.copy() 
     
     preprocessor = SolarPreprocessor(
@@ -117,43 +110,33 @@ def load_data(csv_path, feature_cols, n_past, n_future):
         }
     )
     
-    # Carrega scalers da pasta raiz (onde você disse que eles estão)
-    SCALER_DIR = "." 
+    # --- MUDANÇA: Carrega Scalers de 'artifacts' ---
+    SCALER_DIR = "artifacts" 
     try:
         print(f"♻️ Carregando scalers de: {os.path.abspath(SCALER_DIR)}")
         preprocessor.load_scalers(SCALER_DIR)
     except Exception as e:
         print(f"❌ ERRO CRÍTICO: Não encontrei scalers em {SCALER_DIR}.")
-        raise RuntimeError("Impossível rodar XAI sem os scalers originais (scaler_X.pkl, scaler_Y.pkl).")
+        raise RuntimeError("Impossível rodar XAI sem os scalers originais.")
         
     df_proc = preprocessor.transform(df_test)
-    
     valid_cols = [c for c in feature_cols if c in df_proc.columns]
     
     dataset = SolarEfficientDataset(
         df_proc, 
-        input_tag=valid_cols, # Usa o nome correto do argumento
+        input_tag=valid_cols,
         n_past=n_past, 
         n_future=n_future,
     )
     return dataset, df_proc
 
 def get_safe_features(matrix, feature_names):
-    """
-    Função Auxiliar CRÍTICA:
-    Garante que a lista de nomes tenha o mesmo tamanho das colunas da matriz XAI.
-    Evita o erro 'IndexError: index 7 is out of bounds'.
-    """
     if matrix is None: return feature_names
-    
-    # Se a matriz for 1D (ex: importância global), pega shape[0], se 2D (temporal) pega shape[1]
     n_cols = matrix.shape[0] if matrix.ndim == 1 else matrix.shape[1]
     
     if len(feature_names) > n_cols:
-        # Corta nomes extras (geralmente o target que sobrou na lista)
         return feature_names[:n_cols]
     elif len(feature_names) < n_cols:
-        # Adiciona nomes genéricos se faltar
         return feature_names + [f"Feat_{i}" for i in range(len(feature_names), n_cols)]
     return feature_names
 
@@ -162,7 +145,9 @@ def main():
     print(f"\n🚀 Iniciando Análise XAI em {len(EXPERIMENTS_DIRS)} modelos...")
     
     for exp_dir in EXPERIMENTS_DIRS:
-        if not os.path.exists(exp_dir): continue
+        if not os.path.exists(exp_dir): 
+            print(f"⚠️ Pasta do experimento não encontrada: {exp_dir}")
+            continue
 
         model_name = os.path.basename(exp_dir)
         print(f"\n🔬 Analisando: {model_name}")
@@ -174,7 +159,6 @@ def main():
             model, config = load_config_and_model(exp_dir)
             feature_cols = config.get('feature_cols')
             
-            # Carrega dados
             dataset, df_proc = load_data(
                 CSV_PATH, 
                 feature_cols, 
@@ -188,16 +172,12 @@ def main():
             # ANÁLISE 1: Global
             print("   📊 [1/6] Análise Global de Variáveis...")
             global_imp = xai.compute_global_feature_importance(full_loader)
-            
-            # USO DA FUNÇÃO SEGURA
             safe_feats = get_safe_features(global_imp, feature_cols)
             xai.plot_global_importance(global_imp, safe_feats, save_path=os.path.join(save_folder, '1_Global_Importance.png'))
             
             # ANÁLISE 2: Temporal
             print("   ⏳ [2/6] Análise Temporal (Memória do Modelo)...")
             temporal_map = xai.compute_temporal_importance(full_loader, target_step_idx=0, max_samples=500)
-            
-            # USO DA FUNÇÃO SEGURA
             safe_feats = get_safe_features(temporal_map, feature_cols)
             xai.plot_temporal_profile(temporal_map, safe_feats, save_path=os.path.join(save_folder, '2_Temporal_Profile.png'))
 
@@ -258,8 +238,6 @@ def main():
                     idx_worst_rel = np.argmax(errors)
                     
                     x_best = dataset[idx_best_rel][0].unsqueeze(0)
-                    
-                    # Explicação Local
                     map_best = xai.get_local_explanation(x_best)
                     safe_feats = get_safe_features(map_best, feature_cols)
                     xai.plot_heatmap(map_best, safe_feats, f"Melhor Caso (Erro: {errors[idx_best_rel]:.4f})", save_path=os.path.join(save_folder, '4a_Case_Best.png'))
@@ -280,8 +258,7 @@ def main():
                         print("   🧬 [6/6] Atenção de Variáveis...")
                         feat_map = xai.collect_feature_weights(x_worst)
                         if feat_map is not None:
-                            # Feature map geralmente vem como [Features, Tempo]
-                            safe_feats = get_safe_features(feat_map.T, feature_cols) # Transpõe para checar dimensão feature
+                            safe_feats = get_safe_features(feat_map.reshape(1, -1), feature_cols) # Correção dimensional
                             xai.plot_feature_weights(feat_map, feature_names=safe_feats, title="Feature Attention - Pior Caso", save_path=os.path.join(save_folder, '6_Feature_Attn_Worst.png'))
 
         except Exception as e:
