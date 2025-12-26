@@ -252,7 +252,7 @@ def main():
     analyzer = SolarStatisticalAnalyzer(df_final, output_dir=OUTPUT_COMPARISON_DIR)
     
     analyzer.save_global_metrics()      
-    analyzer.plot_metrics_by_horizon()  
+    #analyzer.plot_metrics_by_horizon()  
     analyzer.plot_boxplots_hourly()     
     analyzer.plot_taylor_diagram()      
     analyzer.plot_scatter_hist()

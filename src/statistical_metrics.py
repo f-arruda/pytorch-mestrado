@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.lines as mlines
+import matplotlib.dates as mdates
 import seaborn as sns
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 import skill_metrics as sm
@@ -9,46 +10,47 @@ import os
 
 class SolarStatisticalAnalyzer:
     def __init__(self, df_combined, output_dir):
-        self.df = df_combined
+        self.df = df_combined.copy()
         self.save_path = output_dir
         os.makedirs(self.save_path, exist_ok=True)
-
-        self.df['Timestamp'] = pd.to_datetime(self.df['Timestamp'])
-        self.df['Date'] = self.df['Timestamp'].dt.date  # <--- Faltava isso!
         
-        # Filtro Diurno (Zenith < 70)
+        # Garante timestamp e cria coluna de DATA
+        self.df['Timestamp'] = pd.to_datetime(self.df['Timestamp'])
+        self.df['Date'] = self.df['Timestamp'].dt.date 
+        
+        # Filtro Diurno (Zenith < 80)
         if 'zenith' in self.df.columns:
-            self.df_day = self.df[self.df['zenith'] < 70].copy()
-            print(f"☀️ Filtro Diurno aplicado: {len(self.df_day)} amostras.")
+            self.df_day = self.df[self.df['zenith'] < 80].copy()
         else:
             self.df_day = self.df.copy()
 
-        # Dicionário de Estilos (Baseado no seu script original)
+        # Dicionário de Estilos
         self.markers_dict = {
             'Observado': {'Symbol': 'h', 'Size': 12, 'FaceColor': 'black', 'EdgeColor': 'black', 'style': '-'},
-            # Defina cores para seus modelos aqui
+            'Persistencia': {'Symbol': 'X', 'Size': 9, 'FaceColor': 'gray', 'EdgeColor': 'gray', 'style': '--'},
+            
+            # Seus modelos
             'LSTM_Bi_Attention': {'Symbol': 'o', 'Size': 10, 'FaceColor': 'white', 'EdgeColor': 'green', 'style': ':'},
             'GRU_Bi_Attention': {'Symbol': 's', 'Size': 10, 'FaceColor': 'white', 'EdgeColor': 'blue', 'style': ':'},
             'LSTM_Bi_Attention_PAZ': {'Symbol': 'v', 'Size': 10, 'FaceColor': 'cyan', 'EdgeColor': 'cyan', 'style': '-'},
+            'EDLSTM_PAZTUVD': {'Symbol': 'D', 'Size': 10, 'FaceColor': 'orange', 'EdgeColor': 'red', 'style': '-.'}
         }
         
-        # Estilos globais (CORRIGIDO: Adicionado STYLES_RMS)
         self.COLS_COR = {'grid': '#8a8a8a', 'tick_labels': '#000000', 'title': '#000000'}
         self.COLS_STD = {'grid': '#8a8a8a', 'tick_labels': '#000000', 'ticks': '#8a8a8a', 'title': '#000000'}
-        self.STYLES_RMS = {'color': '#8a8a8a', 'linestyle': '--'}  # <--- Faltava isso aqui!
+        self.STYLES_RMS = {'color': '#8a8a8a', 'linestyle': '--'}
+        
+        sns.set_style("whitegrid")
+        plt.rcParams.update({'font.size': 12})
 
     def _get_style(self, model_name):
-        """Retorna estilo do dicionário ou gera um aleatório consistente."""
-        # Busca exata ou parcial
-        for key in self.markers_dict:
-            if key == model_name:
-                return self.markers_dict[key]
+        if model_name == 'Persistencia': 
+            return self.markers_dict['Persistencia']
         
-        # Fallback genérico se não achar
-        import hashlib
-        h = int(hashlib.sha256(model_name.encode()).hexdigest(), 16) % 0xFFFFFF
-        c = f"#{h:06x}"
-        return {'Symbol': 'd', 'Size': 10, 'FaceColor': c, 'EdgeColor': c, 'style': '-'}
+        for key in self.markers_dict:
+            if key in model_name and key != 'Persistencia':
+                return self.markers_dict[key]
+        return {'Symbol': 'o', 'Size': 8, 'FaceColor': 'purple', 'EdgeColor': 'purple', 'style': '-'}
 
     def _save_fig(self, fig, name):
         path = os.path.join(self.save_path, f"{name}.png")
@@ -56,53 +58,91 @@ class SolarStatisticalAnalyzer:
         plt.close(fig)
         print(f"📊 Salvo: {path}")
 
+    # ==========================================================================
+    #  MÉTRICAS GLOBAIS
+    # ==========================================================================
     def save_global_metrics(self):
         metrics = []
+        
+        # 1. Métricas dos Modelos
         for m in self.df_day['Modelo'].unique():
             sub = self.df_day[self.df_day['Modelo'] == m]
             obs, pred = sub['Observado'], sub['Previsto']
             
             rmse = np.sqrt(mean_squared_error(obs, pred))
+            mae = mean_absolute_error(obs, pred)
+            r2 = r2_score(obs, pred)
             
-            # Skill Score Global (vs Persistencia)
             ss = np.nan
             if 'Persistencia' in sub.columns:
                 p_valid = sub.dropna(subset=['Persistencia'])
                 if not p_valid.empty:
-                    # Alinha índices
-                    idx = p_valid.index
                     rmse_p = np.sqrt(mean_squared_error(p_valid['Observado'], p_valid['Persistencia']))
-                    # Recalcula RMSE do modelo apenas nesses índices para ser justo
-                    rmse_m = np.sqrt(mean_squared_error(p_valid['Observado'], sub.loc[idx, 'Previsto']))
-                    
+                    rmse_m = np.sqrt(mean_squared_error(p_valid['Observado'], p_valid['Previsto']))
                     ss = (1 - (rmse_m/rmse_p)) * 100 if rmse_p != 0 else np.nan
 
             metrics.append({
                 'Modelo': m,
-                'RMSE': rmse,
-                'MAE': mean_absolute_error(obs, pred),
-                'R2': r2_score(obs, pred),
-                'Skill Score (%)': ss
+                'RMSE (kW)': round(rmse, 4),
+                'MAE (kW)': round(mae, 4),
+                'R2': round(r2, 4),
+                'Skill Score (%)': round(ss, 2)
             })
+            
+        # 2. Métricas da Persistência
+        if not self.df_day.empty:
+            first_model = self.df_day['Modelo'].iloc[0]
+            sub_p = self.df_day[self.df_day['Modelo'] == first_model].dropna(subset=['Persistencia'])
+            
+            if not sub_p.empty:
+                rmse_p = np.sqrt(mean_squared_error(sub_p['Observado'], sub_p['Persistencia']))
+                mae_p = mean_absolute_error(sub_p['Observado'], sub_p['Persistencia'])
+                r2_p = r2_score(sub_p['Observado'], sub_p['Persistencia'])
+                
+                metrics.append({
+                    'Modelo': 'Persistencia',
+                    'RMSE (kW)': round(rmse_p, 4),
+                    'MAE (kW)': round(mae_p, 4),
+                    'R2': round(r2_p, 4),
+                    'Skill Score (%)': 0.0
+                })
         
-        pd.DataFrame(metrics).to_csv(os.path.join(self.save_path, 'global_metrics.csv'), index=False)
+        pd.DataFrame(metrics).sort_values('RMSE (kW)').to_csv(os.path.join(self.save_path, 'global_metrics.csv'), index=False)
+        print("📊 Métricas (incluindo Persistência) salvas.")
 
+    # ==========================================================================
+    #  GRÁFICOS
+    # ==========================================================================
     def plot_metrics_by_horizon(self):
-        """Lineplots: pRMSE, pMBE, Skill Score."""
         df = self.df_day
         horizons = sorted(df['Horizonte'].unique())
         
+        # Prepara dados da persistência
+        ref_model = df['Modelo'].iloc[0]
+        df_ref = df[df['Modelo'] == ref_model]
+        pers_metrics = {'pRMSE': [], 'pMBE': []}
+        
+        for h in horizons:
+            sub_h = df_ref[df_ref['Horizonte'] == h].dropna(subset=['Persistencia'])
+            if sub_h.empty:
+                pers_metrics['pRMSE'].append(np.nan)
+                pers_metrics['pMBE'].append(np.nan)
+                continue
+            obs_mean = sub_h['Observado'].mean()
+            rmse_p = np.sqrt(mean_squared_error(sub_h['Observado'], sub_h['Persistencia']))
+            mbe_p = np.mean(sub_h['Persistencia'] - sub_h['Observado'])
+            pers_metrics['pRMSE'].append((rmse_p/obs_mean)*100 if obs_mean else np.nan)
+            pers_metrics['pMBE'].append((mbe_p/obs_mean)*100 if obs_mean else np.nan)
+
         for metric in ['pRMSE', 'pMBE', 'Skill Score']:
             fig, ax = plt.subplots(figsize=(12, 6))
             
             for m in df['Modelo'].unique():
                 sub = df[df['Modelo'] == m]
                 x, y = [], []
-                
                 for h in horizons:
                     sub_h = sub[sub['Horizonte'] == h]
                     if sub_h.empty: continue
-                    
                     obs_mean = sub_h['Observado'].mean()
                     rmse = np.sqrt(mean_squared_error(sub_h['Observado'], sub_h['Previsto']))
                     
@@ -119,12 +159,16 @@ class SolarStatisticalAnalyzer:
                                  rmse_mod = np.sqrt(mean_squared_error(valid['Observado'], valid['Previsto']))
                                  rmse_per = np.sqrt(mean_squared_error(valid['Observado'], valid['Persistencia']))
                                  val = (1 - (rmse_mod/rmse_per))*100 if rmse_per else np.nan
-
                     x.append(h)
                     y.append(val)
                 
                 style = self._get_style(m)
                 ax.plot(x, y, label=m, color=style['EdgeColor'], marker=style['Symbol'], linestyle=style['style'])
+
+            if metric != 'Skill Score':
+                st_p = self._get_style('Persistencia')
+                ax.plot(horizons, pers_metrics[metric], label='Persistencia', 
+                        color=st_p['EdgeColor'], marker=st_p['Symbol'], linestyle=st_p['style'], alpha=0.7)
 
             if metric == 'pMBE': ax.axhline(0, color='k', linestyle='--')
             ax.set_title(f"{metric} por Horizonte")
@@ -135,27 +179,34 @@ class SolarStatisticalAnalyzer:
             self._save_fig(fig, f"lineplot_{metric}")
 
     def plot_boxplots_hourly(self):
-        """Boxplot colorido por modelo."""
         hours = sorted(self.df_day['Hour'].unique())
         models = sorted(self.df_day['Modelo'].unique())
-        all_series = ['Observado'] + models
+        all_series = ['Observado', 'Persistencia'] + models
         
         fig, ax = plt.subplots(figsize=(16, 8))
         data, pos, colors = [], [], []
+        
+        ref_model = self.df_day['Modelo'].iloc[0]
+        df_ref = self.df_day[self.df_day['Modelo'] == ref_model]
         
         curr = 1
         for h in hours:
             if curr != 1: curr += 1
             for m in all_series:
                 if m == 'Observado':
-                    vals = self.df_day[self.df_day['Hour'] == h]['Observado']
+                    vals = df_ref[df_ref['Hour'] == h]['Observado']
+                    c = 'black'
+                elif m == 'Persistencia':
+                    vals = df_ref[df_ref['Hour'] == h]['Persistencia']
+                    c = 'gray'
                 else:
                     vals = self.df_day[(self.df_day['Hour'] == h) & (self.df_day['Modelo'] == m)]['Previsto']
+                    c = self._get_style(m)['FaceColor']
                 
                 if not vals.empty:
                     data.append(vals.dropna().values)
                     pos.append(curr)
-                    colors.append(self._get_style(m)['FaceColor'])
+                    colors.append(c)
                     curr += 1
 
         bplot = ax.boxplot(data, positions=pos, widths=0.6, patch_artist=True, 
@@ -163,43 +214,53 @@ class SolarStatisticalAnalyzer:
         
         for patch, color in zip(bplot['boxes'], colors):
             patch.set_facecolor(color)
-        for median in bplot['medians']:
-            median.set_color('black')
-            
-        ax.set_xticks([np.mean([p for p in pos if (p-1)//(len(all_series)+1) == i]) for i in range(len(hours))])
-        ax.set_xticklabels(hours)
-        ax.set_xlabel("Hora (UTC-3)")
+            if color == 'black' or color == 'gray': patch.set_alpha(0.6)
         
-        handles = [mlines.Line2D([],[], color=self._get_style(m)['EdgeColor'], marker='s', linestyle='None', label=m) for m in all_series]
-        ax.legend(handles=handles)
-        self._save_fig(fig, "boxplot_hourly")
+        group_center = [np.mean([p for p in pos if (p-1)//(len(all_series)+1) == i]) for i in range(len(hours))]
+        ax.set_xticks(group_center)
+        ax.set_xticklabels(hours)
+        ax.set_xlabel("Hora do Dia")
+        ax.set_ylabel("Potência (kW)")
+        
+        handles = [mlines.Line2D([],[], color=self._get_style(m)['EdgeColor'] if m not in ['Observado', 'Persistencia'] else ('black' if m=='Observado' else 'gray'), 
+                                 marker='s', linestyle='None', label=m) for m in all_series]
+        ax.legend(handles=handles, loc='upper left')
+        self._save_fig(fig, "boxplot_hourly_distribution")
 
     def plot_taylor_diagram(self):
-        """Diagrama de Taylor."""
         fig = plt.figure(figsize=(10, 10))
+        if self.df_day.empty: return
         
-        # Referência (Observado)
-        # Pega a referência do primeiro modelo (pois Observado é igual para todos)
         ref_model = self.df_day['Modelo'].iloc[0]
-        ref_data = self.df_day[self.df_day['Modelo'] == ref_model]['Observado'].values
+        sub_ref = self.df_day[self.df_day['Modelo'] == ref_model].dropna(subset=['Observado', 'Persistencia'])
         
+        ref_data = sub_ref['Observado'].values
         sdevs = [np.std(ref_data)]
         crmsds = [0]
         ccoefs = [1]
         labels = ['Ref']
+        faces, edges, symbols = ['black'], ['black'], ['h']
         
-        # Configurações visuais (Listas)
-        faces = ['black']
-        edges = ['black']
-        symbols = ['h']
+        # Persistência
+        per_data = sub_ref['Persistencia'].values
+        sdevs.append(np.std(per_data))
+        crmsds.append(np.sqrt(mean_squared_error(ref_data, per_data)))
+        ccoefs.append(np.corrcoef(ref_data, per_data)[0, 1])
+        labels.append('Persistencia')
         
+        st_p = self._get_style('Persistencia')
+        faces.append(st_p['FaceColor'])
+        edges.append(st_p['EdgeColor'])
+        symbols.append(st_p['Symbol'])
+        
+        # Modelos
         for m in self.df_day['Modelo'].unique():
-            sub = self.df_day[self.df_day['Modelo'] == m]
-            pred, obs = sub['Previsto'].values, sub['Observado'].values
+            sub = self.df_day[self.df_day['Modelo'] == m].dropna(subset=['Observado', 'Previsto'])
+            if sub.empty: continue
             
-            sdevs.append(np.std(pred))
-            crmsds.append(np.sqrt(mean_squared_error(obs, pred)))
-            ccoefs.append(np.corrcoef(obs, pred)[0, 1])
+            sdevs.append(np.std(sub['Previsto'].values))
+            crmsds.append(np.sqrt(mean_squared_error(sub['Observado'].values, sub['Previsto'].values)))
+            ccoefs.append(np.corrcoef(sub['Observado'].values, sub['Previsto'].values)[0, 1])
             labels.append(m)
             
             st = self._get_style(m)
@@ -207,311 +268,147 @@ class SolarStatisticalAnalyzer:
             edges.append(st['EdgeColor'])
             symbols.append(st['Symbol'])
 
-        # Plotagem (Usando markersize fixo = 10 para evitar crash)
         sm.taylor_diagram(np.array(sdevs), np.array(crmsds), np.array(ccoefs),
                           markerLabel=labels, markerLegend='on',
                           markercolors={'face': faces, 'edge': edges},
                           markersymbol=symbols, 
                           markersize=10, 
-                          styleOBS='-', colOBS='black',
-                          titleOBS='Observado',
                           colscor=self.COLS_COR, colsstd=self.COLS_STD,
                           styleRMS=self.STYLES_RMS['linestyle'], colRMS=self.STYLES_RMS['color'])
-        
         self._save_fig(fig, "taylor_diagram")
 
+    def plot_error_by_hour_of_day(self):
+        print("📈 Gerando perfil de erro horário...")
+        df_sun = self.df_day[(self.df_day['Hour'] >= 6) & (self.df_day['Hour'] <= 19)].copy()
+        if df_sun.empty: return
+
+        df_sun['SE'] = (df_sun['Observado'] - df_sun['Previsto']) ** 2
+        grouped = df_sun.groupby(['Modelo', 'Hour'])['SE'].mean().reset_index()
+        grouped['RMSE'] = np.sqrt(grouped['SE'])
+        
+        # Persistência
+        ref_model = df_sun['Modelo'].iloc[0]
+        df_ref = df_sun[df_sun['Modelo'] == ref_model].copy()
+        df_ref['SE_Pers'] = (df_ref['Observado'] - df_ref['Persistencia']) ** 2
+        grouped_p = df_ref.groupby('Hour')['SE_Pers'].mean().reset_index()
+        grouped_p['RMSE'] = np.sqrt(grouped_p['SE_Pers'])
+
+        fig, ax = plt.subplots(figsize=(12, 6))
+        for m in grouped['Modelo'].unique():
+            sub = grouped[grouped['Modelo'] == m]
+            style = self._get_style(m)
+            ax.plot(sub['Hour'], sub['RMSE'], label=m, 
+                    color=style['EdgeColor'], marker=style['Symbol'], linestyle='-')
+            
+        st_p = self._get_style('Persistencia')
+        ax.plot(grouped_p['Hour'], grouped_p['RMSE'], label='Persistencia',
+                color=st_p['EdgeColor'], marker=st_p['Symbol'], linestyle=st_p['style'], linewidth=2)
+            
+        ax.set_title('Perfil Diário de Erro (RMSE por Hora)')
+        ax.set_xlabel('Hora do Dia')
+        ax.set_ylabel('RMSE Médio (kW)')
+        ax.set_xticks(range(6, 20))
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        self._save_fig(fig, 'profile_RMSE_Hourly')
+
+    def plot_scenario_days(self):
+        print("🔍 Buscando dias representativos...")
+        date_clear, date_cloudy = self._find_representative_days()
+        scenarios = {'Ceu_Claro': date_clear, 'Nublado_Transiente': date_cloudy}
+        
+        for label, date_obj in scenarios.items():
+            if date_obj is None: continue
+            
+            day_data = self.df[self.df['Date'] == date_obj].sort_values('Timestamp')
+            if day_data.empty: continue
+
+            fig, ax = plt.subplots(figsize=(14, 7))
+            
+            first_model = day_data['Modelo'].unique()[0]
+            ref_data = day_data[day_data['Modelo'] == first_model]
+            
+            ax.plot(ref_data['Timestamp'], ref_data['Observado'], 
+                    color='black', label='Observado', linewidth=2.5, zorder=10)
+            
+            st_p = self._get_style('Persistencia')
+            ax.plot(ref_data['Timestamp'], ref_data['Persistencia'],
+                    color=st_p['EdgeColor'], label='Persistencia', 
+                    linestyle=st_p['style'], linewidth=1.5, zorder=5)
+            
+            for m in day_data['Modelo'].unique():
+                sub = day_data[day_data['Modelo'] == m]
+                style = self._get_style(m)
+                ax.plot(sub['Timestamp'], sub['Previsto'], label=m,
+                        color=style['EdgeColor'], linestyle=style['style'], linewidth=1.5)
+            
+            ax.set_title(f'Cenário: {label.replace("_", " ")} ({date_obj})')
+            ax.set_ylabel('Potência (kW)')
+            ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
+            ax.legend()
+            ax.grid(True, alpha=0.3)
+            self._save_fig(fig, f"scenario_{label}")
+
+    def _find_representative_days(self):
+        if self.df.empty: return None, None
+        first_model = self.df['Modelo'].unique()[0]
+        df_base = self.df[self.df['Modelo'] == first_model].copy()
+        
+        daily_stats = []
+        for date, group in df_base.groupby('Date'):
+            if len(group) < 12: continue
+            energy_sum = group['Observado'].sum()
+            volatility = group['Observado'].diff().abs().mean()
+            daily_stats.append({'Date': date, 'Energy': energy_sum, 'Volatility': volatility})
+            
+        stats_df = pd.DataFrame(daily_stats)
+        if stats_df.empty: return None, None
+        
+        top_energy = stats_df.nlargest(int(len(stats_df)*0.2), 'Energy')
+        clear_sky_day = top_energy.nsmallest(1, 'Volatility').iloc[0]['Date'] if not top_energy.empty else None
+        cloudy_day = stats_df.nlargest(1, 'Volatility').iloc[0]['Date']
+        return clear_sky_day, cloudy_day
+
+    # ==========================================================================
+    #  SCATTER PLOTS (VOLTANDO AO PADRÃO ANTIGO)
+    # ==========================================================================
     def plot_scatter_hist(self):
-        """Histograma + Scatter Plot individuais por modelo."""
+        """Histograma + Scatter Plot individuais por modelo (incluindo Persistência)."""
+        # 1. Plots dos Modelos
         for m in self.df_day['Modelo'].unique():
             sub = self.df_day[self.df_day['Modelo'] == m]
-            error = sub['Previsto'] - sub['Observado']
+            self._plot_single_dashboard(sub['Observado'], sub['Previsto'], m, self._get_style(m)['EdgeColor'])
             
-            fig, ax = plt.subplots(1, 2, figsize=(14, 6))
-            style = self._get_style(m)
-            c = style['EdgeColor']
-            
-            # Histograma
-            sns.histplot(error, kde=True, color=c, ax=ax[0])
-            ax[0].set_title(f"Erro: {m}")
-            ax[0].set_xlabel("Erro (Previsto - Observado)")
-            ax[0].axvline(0, color='k', linestyle='--')
-            
-            # Scatter
-            sns.regplot(data=sub, x='Observado', y='Previsto', 
-                        scatter_kws={'alpha':0.3, 'color':c}, line_kws={'color':'k'}, ax=ax[1])
-            
-            # Linha 1:1
-            max_val = max(sub['Observado'].max(), sub['Previsto'].max())
-            ax[1].plot([0, max_val], [0, max_val], 'k--')
-            ax[1].set_title(f"Dispersão: {m}")
-            
-            self._save_fig(fig, f"scatter_{m}")
+        # 2. Plot da Persistência
+        if not self.df_day.empty:
+            ref_model = self.df_day['Modelo'].iloc[0]
+            sub_p = self.df_day[self.df_day['Modelo'] == ref_model]
+            self._plot_single_dashboard(sub_p['Observado'], sub_p['Persistencia'], 'Persistencia', 'gray')
 
-            # ==========================================================================
-    #  FASE 1: DIAGNÓSTICO GRANULAR (NOVO)
-    # ==========================================================================
-    
-    def plot_error_by_hour_of_day(self):
-        """
-        Plota o RMSE distribuído pelas horas do dia (0h - 23h).
-        Isso responde: 'O modelo erra mais ao meio-dia ou no entardecer?'
-        """
-        print("📈 Gerando perfil de erro horário...")
+    def _plot_single_dashboard(self, obs, pred, name, color):
+        """Gera o layout antigo: Histograma (Esq) + Scatter (Dir)."""
+        error = pred - obs
         
-        # Filtra apenas horas com sol (opcional, mas recomendado para evitar ruído noturno)
-        # Assumindo que 6h as 19h tem sol
-        df_sun = self.df[(self.df['Hour'] >= 5) & (self.df['Hour'] <= 20)].copy()
+        fig, ax = plt.subplots(1, 2, figsize=(14, 6))
         
-        df_sun['SE'] = (df_sun['Observado'] - df_sun['Previsto']) ** 2
-        df_sun['AE'] = np.abs(df_sun['Observado'] - df_sun['Previsto'])
+        # Histograma de Erros
+        sns.histplot(error, kde=True, color=color, ax=ax[0])
+        ax[0].set_title(f"Distribuição de Erro: {name}")
+        ax[0].set_xlabel("Erro (Previsto - Observado)")
+        ax[0].axvline(0, color='k', linestyle='--')
         
-        # Agrupa por Modelo e Hora do Dia
-        grouped = df_sun.groupby(['Modelo', 'Hour']).agg(
-            RMSE=('SE', lambda x: np.sqrt(x.mean())),
-            MAE=('AE', 'mean')
-        ).reset_index()
+        # Scatter Plot (Regplot)
+        sns.regplot(x=obs, y=pred, scatter_kws={'alpha':0.3, 'color':color}, 
+                    line_kws={'color':'k'}, ax=ax[1])
         
-        # Plot RMSE
-        plt.figure(figsize=(12, 6))
-        sns.lineplot(data=grouped, x='Hour', y='RMSE', hue='Modelo', marker='o', linewidth=2)
-        plt.title('Perfil Diário de Erro (RMSE por Hora)')
-        plt.xlabel('Hora do Dia (Local)')
-        plt.ylabel('RMSE (kW)')
-        plt.xticks(range(5, 21)) # Mostra apenas horas de sol
-        plt.grid(True, alpha=0.3)
-        plt.savefig(os.path.join(self.save_path, 'profile_RMSE_Hourly.png'))
-        plt.close()
+        # Linha de Identidade 1:1
+        min_val = min(obs.min(), pred.min())
+        max_val = max(obs.max(), pred.max())
+        ax[1].plot([min_val, max_val], [min_val, max_val], 'k--', label='Identidade')
         
-        # Plot MAE (Opcional, bom para ver magnitude absoluta)
-        plt.figure(figsize=(12, 6))
-        sns.lineplot(data=grouped, x='Hour', y='MAE', hue='Modelo', marker='s', linestyle='--', linewidth=2)
-        plt.title('Perfil Diário de Erro Absoluto (MAE por Hora)')
-        plt.xlabel('Hora do Dia (Local)')
-        plt.ylabel('MAE (kW)')
-        plt.xticks(range(5, 21))
-        plt.grid(True, alpha=0.3)
-        plt.savefig(os.path.join(self.save_path, 'profile_MAE_Hourly.png'))
-        plt.close()
-
-
-    def _find_representative_days(self):
-        """
-        Lógica interna para encontrar dias de Céu Claro e Dias Nublados automaticamente.
-        Critério:
-        - Céu Claro: Alta soma de energia + Baixa variabilidade (curva lisa).
-        - Nublado/Transiente: Energia média + Alta variabilidade (zigue-zague).
-        """
-        # Agrupa dados observados por data
-        # Pega apenas o primeiro modelo para analisar os dados observados (que são iguais para todos)
-        first_model = self.df['Modelo'].unique()[0]
-        df_base = self.df[self.df['Modelo'] == first_model].copy()
+        ax[1].set_title(f"Dispersão: {name}")
+        ax[1].set_xlabel("Observado (kW)")
+        ax[1].set_ylabel("Previsto (kW)")
+        ax[1].legend()
         
-        daily_stats = []
-        for date, group in df_base.groupby('Date'):
-            if len(group) < 10: continue # Pula dias incompletos
-            
-            energy_sum = group['Observado'].sum()
-            # Variabilidade = Desvio padrão da primeira derivada (mudança hora a hora)
-            volatility = group['Observado'].diff().std()
-            
-            daily_stats.append({
-                'Date': date,
-                'Energy': energy_sum,
-                'Volatility': volatility
-            })
-            
-        stats_df = pd.DataFrame(daily_stats)
-        if stats_df.empty: return None, None
-        
-        # Encontra Céu Claro: Alta Energia e Baixa Volatilidade (relativa à energia)
-        # Ordena por energia decrescente
-        stats_df = stats_df.sort_values('Energy', ascending=False)
-        # Pega o top 10% de energia e escolhe o de menor volatilidade
-        top_energy = stats_df.head(int(len(stats_df)*0.2)) 
-        clear_sky_day = top_energy.sort_values('Volatility').iloc[0]['Date']
-        
-        # Encontra Sombreamento/Nublado: Volatilidade Máxima
-        cloudy_day = stats_df.sort_values('Volatility', ascending=False).iloc[0]['Date']
-        
-        return clear_sky_day, cloudy_day
-
-    def plot_scenario_days(self):
-        """
-        Gera curvas de geração (Obs vs Prev) para dias específicos encontrados automaticamente.
-        """
-        print("🔍 Buscando dias representativos (Céu Claro vs Nublado)...")
-        date_clear, date_cloudy = self._find_representative_days()
-        
-        scenarios = {
-            'Ceu_Claro': date_clear,
-            'Nublado_Transiente': date_cloudy
-        }
-        
-        for label, date_obj in scenarios.items():
-            if date_obj is None: continue
-            
-            print(f"   📅 Plotando {label}: {date_obj}")
-            
-            # Filtra dados desse dia
-            day_data = self.df[self.df['Date'] == date_obj].sort_values('Timestamp')
-            
-            plt.figure(figsize=(14, 7))
-            
-            # Plota Observado (Preto, linha grossa)
-            # Pega de um modelo só para não duplicar linha
-            one_model_data = day_data[day_data['Modelo'] == day_data['Modelo'].unique()[0]]
-            plt.plot(one_model_data['Timestamp'], one_model_data['Observado'], 
-                     color='black', label='Observado (Real)', linewidth=2.5, zorder=10)
-            
-            # Plota Previsão de cada Modelo
-            sns.lineplot(data=day_data, x='Timestamp', y='Previsto', hue='Modelo', 
-                         linewidth=1.5, alpha=0.8)
-            
-            plt.title(f'Análise de Cenário: {label.replace("_", " ")} ({date_obj})')
-            plt.ylabel('Potência (kW)')
-            plt.xlabel('Horário')
-            
-            # Formata eixo X para mostrar horas
-            import matplotlib.dates as mdates
-            plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
-            
-            plt.legend()
-            plt.grid(True, alpha=0.3)
-            plt.savefig(os.path.join(self.save_path, f'scenario_{label}.png'))
-            plt.close()
-
-    # ==========================================================================
-    #  FASE 1: DIAGNÓSTICO GRANULAR (NOVO)
-    # ==========================================================================
-    
-    def plot_error_by_hour_of_day(self):
-        """
-        Plota o RMSE distribuído pelas horas do dia (0h - 23h).
-        Isso responde: 'O modelo erra mais ao meio-dia ou no entardecer?'
-        """
-        print("📈 Gerando perfil de erro horário...")
-        
-        # Filtra apenas horas com sol (opcional, mas recomendado para evitar ruído noturno)
-        # Assumindo que 6h as 19h tem sol
-        df_sun = self.df[(self.df['Hour'] >= 5) & (self.df['Hour'] <= 20)].copy()
-        
-        df_sun['SE'] = (df_sun['Observado'] - df_sun['Previsto']) ** 2
-        df_sun['AE'] = np.abs(df_sun['Observado'] - df_sun['Previsto'])
-        
-        # Agrupa por Modelo e Hora do Dia
-        grouped = df_sun.groupby(['Modelo', 'Hour']).agg(
-            RMSE=('SE', lambda x: np.sqrt(x.mean())),
-            MAE=('AE', 'mean')
-        ).reset_index()
-        
-        # Plot RMSE
-        plt.figure(figsize=(12, 6))
-        sns.lineplot(data=grouped, x='Hour', y='RMSE', hue='Modelo', marker='o', linewidth=2)
-        plt.title('Perfil Diário de Erro (RMSE por Hora)')
-        plt.xlabel('Hora do Dia (Local)')
-        plt.ylabel('RMSE (kW)')
-        plt.xticks(range(5, 21)) # Mostra apenas horas de sol
-        plt.grid(True, alpha=0.3)
-        plt.savefig(os.path.join(self.save_path, 'profile_RMSE_Hourly.png'))
-        plt.close()
-        
-        # Plot MAE (Opcional, bom para ver magnitude absoluta)
-        plt.figure(figsize=(12, 6))
-        sns.lineplot(data=grouped, x='Hour', y='MAE', hue='Modelo', marker='s', linestyle='--', linewidth=2)
-        plt.title('Perfil Diário de Erro Absoluto (MAE por Hora)')
-        plt.xlabel('Hora do Dia (Local)')
-        plt.ylabel('MAE (kW)')
-        plt.xticks(range(5, 21))
-        plt.grid(True, alpha=0.3)
-        plt.savefig(os.path.join(self.save_path, 'profile_MAE_Hourly.png'))
-        plt.close()
-
-    # ==========================================================================
-    #  FASE 2: ANÁLISE DE CENÁRIOS FÍSICOS (NOVO)
-    # ==========================================================================
-
-    def _find_representative_days(self):
-        """
-        Lógica interna para encontrar dias de Céu Claro e Dias Nublados automaticamente.
-        Critério:
-        - Céu Claro: Alta soma de energia + Baixa variabilidade (curva lisa).
-        - Nublado/Transiente: Energia média + Alta variabilidade (zigue-zague).
-        """
-        # Agrupa dados observados por data
-        # Pega apenas o primeiro modelo para analisar os dados observados (que são iguais para todos)
-        first_model = self.df['Modelo'].unique()[0]
-        df_base = self.df[self.df['Modelo'] == first_model].copy()
-        
-        daily_stats = []
-        for date, group in df_base.groupby('Date'):
-            if len(group) < 10: continue # Pula dias incompletos
-            
-            energy_sum = group['Observado'].sum()
-            # Variabilidade = Desvio padrão da primeira derivada (mudança hora a hora)
-            volatility = group['Observado'].diff().std()
-            
-            daily_stats.append({
-                'Date': date,
-                'Energy': energy_sum,
-                'Volatility': volatility
-            })
-            
-        stats_df = pd.DataFrame(daily_stats)
-        if stats_df.empty: return None, None
-        
-        # Encontra Céu Claro: Alta Energia e Baixa Volatilidade (relativa à energia)
-        # Ordena por energia decrescente
-        stats_df = stats_df.sort_values('Energy', ascending=False)
-        # Pega o top 10% de energia e escolhe o de menor volatilidade
-        top_energy = stats_df.head(int(len(stats_df)*0.2)) 
-        clear_sky_day = top_energy.sort_values('Volatility').iloc[0]['Date']
-        
-        # Encontra Sombreamento/Nublado: Volatilidade Máxima
-        cloudy_day = stats_df.sort_values('Volatility', ascending=False).iloc[0]['Date']
-        
-        return clear_sky_day, cloudy_day
-
-    def plot_scenario_days(self):
-        """
-        Gera curvas de geração (Obs vs Prev) para dias específicos encontrados automaticamente.
-        """
-        print("🔍 Buscando dias representativos (Céu Claro vs Nublado)...")
-        date_clear, date_cloudy = self._find_representative_days()
-        
-        scenarios = {
-            'Ceu_Claro': date_clear,
-            'Nublado_Transiente': date_cloudy
-        }
-        
-        for label, date_obj in scenarios.items():
-            if date_obj is None: continue
-            
-            print(f"   📅 Plotando {label}: {date_obj}")
-            
-            # Filtra dados desse dia
-            day_data = self.df[self.df['Date'] == date_obj].sort_values('Timestamp')
-            
-            plt.figure(figsize=(14, 7))
-            
-            # Plota Observado (Preto, linha grossa)
-            # Pega de um modelo só para não duplicar linha
-            one_model_data = day_data[day_data['Modelo'] == day_data['Modelo'].unique()[0]]
-            plt.plot(one_model_data['Timestamp'], one_model_data['Observado'], 
-                     color='black', label='Observado (Real)', linewidth=2.5, zorder=10)
-            
-            # Plota Previsão de cada Modelo
-            sns.lineplot(data=day_data, x='Timestamp', y='Previsto', hue='Modelo', 
-                         linewidth=1.5, alpha=0.8)
-            
-            plt.title(f'Análise de Cenário: {label.replace("_", " ")} ({date_obj})')
-            plt.ylabel('Potência (kW)')
-            plt.xlabel('Horário')
-            
-            # Formata eixo X para mostrar horas
-            import matplotlib.dates as mdates
-            plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
-            
-            plt.legend()
-            plt.grid(True, alpha=0.3)
-            plt.savefig(os.path.join(self.save_path, f'scenario_{label}.png'))
-            plt.close()
+        self._save_fig(fig, f"scatter_{name}")
