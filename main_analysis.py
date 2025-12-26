@@ -21,8 +21,7 @@ DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 # Lista de experimentos para comparar
 EXPERIMENTS_DIRS = [
-    "experiments/2025-12-19_19-09-00_EDLSTM_PAZTUVD",
-    # "experiments/OUTRO_EXPERIMENTO...",
+    "experiments/2025-12-19_19-09-00_EDLSTM_PAZTUVD"
 ]
 
 OUTPUT_COMPARISON_DIR = "experiments/Analise_Comparativa_Final"
@@ -256,7 +255,9 @@ def main():
     analyzer.plot_metrics_by_horizon()  
     analyzer.plot_boxplots_hourly()     
     analyzer.plot_taylor_diagram()      
-    analyzer.plot_scatter_hist()        
+    analyzer.plot_scatter_hist()
+    analyzer.plot_error_by_hour_of_day()
+    analyzer.plot_scenario_days() 
     
     print(f"\n🏁 Análise completa salva em: {OUTPUT_COMPARISON_DIR}")
 

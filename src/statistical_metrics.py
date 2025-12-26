@@ -12,6 +12,9 @@ class SolarStatisticalAnalyzer:
         self.df = df_combined
         self.save_path = output_dir
         os.makedirs(self.save_path, exist_ok=True)
+
+        self.df['Timestamp'] = pd.to_datetime(self.df['Timestamp'])
+        self.df['Date'] = self.df['Timestamp'].dt.date  # <--- Faltava isso!
         
         # Filtro Diurno (Zenith < 70)
         if 'zenith' in self.df.columns:
@@ -243,3 +246,272 @@ class SolarStatisticalAnalyzer:
             ax[1].set_title(f"Dispersão: {m}")
             
             self._save_fig(fig, f"scatter_{m}")
+
+            # ==========================================================================
+    #  FASE 1: DIAGNÓSTICO GRANULAR (NOVO)
+    # ==========================================================================
+    
+    def plot_error_by_hour_of_day(self):
+        """
+        Plota o RMSE distribuído pelas horas do dia (0h - 23h).
+        Isso responde: 'O modelo erra mais ao meio-dia ou no entardecer?'
+        """
+        print("📈 Gerando perfil de erro horário...")
+        
+        # Filtra apenas horas com sol (opcional, mas recomendado para evitar ruído noturno)
+        # Assumindo que 6h as 19h tem sol
+        df_sun = self.df[(self.df['Hour'] >= 5) & (self.df['Hour'] <= 20)].copy()
+        
+        df_sun['SE'] = (df_sun['Observado'] - df_sun['Previsto']) ** 2
+        df_sun['AE'] = np.abs(df_sun['Observado'] - df_sun['Previsto'])
+        
+        # Agrupa por Modelo e Hora do Dia
+        grouped = df_sun.groupby(['Modelo', 'Hour']).agg(
+            RMSE=('SE', lambda x: np.sqrt(x.mean())),
+            MAE=('AE', 'mean')
+        ).reset_index()
+        
+        # Plot RMSE
+        plt.figure(figsize=(12, 6))
+        sns.lineplot(data=grouped, x='Hour', y='RMSE', hue='Modelo', marker='o', linewidth=2)
+        plt.title('Perfil Diário de Erro (RMSE por Hora)')
+        plt.xlabel('Hora do Dia (Local)')
+        plt.ylabel('RMSE (kW)')
+        plt.xticks(range(5, 21)) # Mostra apenas horas de sol
+        plt.grid(True, alpha=0.3)
+        plt.savefig(os.path.join(self.save_path, 'profile_RMSE_Hourly.png'))
+        plt.close()
+        
+        # Plot MAE (Opcional, bom para ver magnitude absoluta)
+        plt.figure(figsize=(12, 6))
+        sns.lineplot(data=grouped, x='Hour', y='MAE', hue='Modelo', marker='s', linestyle='--', linewidth=2)
+        plt.title('Perfil Diário de Erro Absoluto (MAE por Hora)')
+        plt.xlabel('Hora do Dia (Local)')
+        plt.ylabel('MAE (kW)')
+        plt.xticks(range(5, 21))
+        plt.grid(True, alpha=0.3)
+        plt.savefig(os.path.join(self.save_path, 'profile_MAE_Hourly.png'))
+        plt.close()
+
+
+    def _find_representative_days(self):
+        """
+        Lógica interna para encontrar dias de Céu Claro e Dias Nublados automaticamente.
+        Critério:
+        - Céu Claro: Alta soma de energia + Baixa variabilidade (curva lisa).
+        - Nublado/Transiente: Energia média + Alta variabilidade (zigue-zague).
+        """
+        # Agrupa dados observados por data
+        # Pega apenas o primeiro modelo para analisar os dados observados (que são iguais para todos)
+        first_model = self.df['Modelo'].unique()[0]
+        df_base = self.df[self.df['Modelo'] == first_model].copy()
+        
+        daily_stats = []
+        for date, group in df_base.groupby('Date'):
+            if len(group) < 10: continue # Pula dias incompletos
+            
+            energy_sum = group['Observado'].sum()
+            # Variabilidade = Desvio padrão da primeira derivada (mudança hora a hora)
+            volatility = group['Observado'].diff().std()
+            
+            daily_stats.append({
+                'Date': date,
+                'Energy': energy_sum,
+                'Volatility': volatility
+            })
+            
+        stats_df = pd.DataFrame(daily_stats)
+        if stats_df.empty: return None, None
+        
+        # Encontra Céu Claro: Alta Energia e Baixa Volatilidade (relativa à energia)
+        # Ordena por energia decrescente
+        stats_df = stats_df.sort_values('Energy', ascending=False)
+        # Pega o top 10% de energia e escolhe o de menor volatilidade
+        top_energy = stats_df.head(int(len(stats_df)*0.2)) 
+        clear_sky_day = top_energy.sort_values('Volatility').iloc[0]['Date']
+        
+        # Encontra Sombreamento/Nublado: Volatilidade Máxima
+        cloudy_day = stats_df.sort_values('Volatility', ascending=False).iloc[0]['Date']
+        
+        return clear_sky_day, cloudy_day
+
+    def plot_scenario_days(self):
+        """
+        Gera curvas de geração (Obs vs Prev) para dias específicos encontrados automaticamente.
+        """
+        print("🔍 Buscando dias representativos (Céu Claro vs Nublado)...")
+        date_clear, date_cloudy = self._find_representative_days()
+        
+        scenarios = {
+            'Ceu_Claro': date_clear,
+            'Nublado_Transiente': date_cloudy
+        }
+        
+        for label, date_obj in scenarios.items():
+            if date_obj is None: continue
+            
+            print(f"   📅 Plotando {label}: {date_obj}")
+            
+            # Filtra dados desse dia
+            day_data = self.df[self.df['Date'] == date_obj].sort_values('Timestamp')
+            
+            plt.figure(figsize=(14, 7))
+            
+            # Plota Observado (Preto, linha grossa)
+            # Pega de um modelo só para não duplicar linha
+            one_model_data = day_data[day_data['Modelo'] == day_data['Modelo'].unique()[0]]
+            plt.plot(one_model_data['Timestamp'], one_model_data['Observado'], 
+                     color='black', label='Observado (Real)', linewidth=2.5, zorder=10)
+            
+            # Plota Previsão de cada Modelo
+            sns.lineplot(data=day_data, x='Timestamp', y='Previsto', hue='Modelo', 
+                         linewidth=1.5, alpha=0.8)
+            
+            plt.title(f'Análise de Cenário: {label.replace("_", " ")} ({date_obj})')
+            plt.ylabel('Potência (kW)')
+            plt.xlabel('Horário')
+            
+            # Formata eixo X para mostrar horas
+            import matplotlib.dates as mdates
+            plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
+            
+            plt.legend()
+            plt.grid(True, alpha=0.3)
+            plt.savefig(os.path.join(self.save_path, f'scenario_{label}.png'))
+            plt.close()
+
+    # ==========================================================================
+    #  FASE 1: DIAGNÓSTICO GRANULAR (NOVO)
+    # ==========================================================================
+    
+    def plot_error_by_hour_of_day(self):
+        """
+        Plota o RMSE distribuído pelas horas do dia (0h - 23h).
+        Isso responde: 'O modelo erra mais ao meio-dia ou no entardecer?'
+        """
+        print("📈 Gerando perfil de erro horário...")
+        
+        # Filtra apenas horas com sol (opcional, mas recomendado para evitar ruído noturno)
+        # Assumindo que 6h as 19h tem sol
+        df_sun = self.df[(self.df['Hour'] >= 5) & (self.df['Hour'] <= 20)].copy()
+        
+        df_sun['SE'] = (df_sun['Observado'] - df_sun['Previsto']) ** 2
+        df_sun['AE'] = np.abs(df_sun['Observado'] - df_sun['Previsto'])
+        
+        # Agrupa por Modelo e Hora do Dia
+        grouped = df_sun.groupby(['Modelo', 'Hour']).agg(
+            RMSE=('SE', lambda x: np.sqrt(x.mean())),
+            MAE=('AE', 'mean')
+        ).reset_index()
+        
+        # Plot RMSE
+        plt.figure(figsize=(12, 6))
+        sns.lineplot(data=grouped, x='Hour', y='RMSE', hue='Modelo', marker='o', linewidth=2)
+        plt.title('Perfil Diário de Erro (RMSE por Hora)')
+        plt.xlabel('Hora do Dia (Local)')
+        plt.ylabel('RMSE (kW)')
+        plt.xticks(range(5, 21)) # Mostra apenas horas de sol
+        plt.grid(True, alpha=0.3)
+        plt.savefig(os.path.join(self.save_path, 'profile_RMSE_Hourly.png'))
+        plt.close()
+        
+        # Plot MAE (Opcional, bom para ver magnitude absoluta)
+        plt.figure(figsize=(12, 6))
+        sns.lineplot(data=grouped, x='Hour', y='MAE', hue='Modelo', marker='s', linestyle='--', linewidth=2)
+        plt.title('Perfil Diário de Erro Absoluto (MAE por Hora)')
+        plt.xlabel('Hora do Dia (Local)')
+        plt.ylabel('MAE (kW)')
+        plt.xticks(range(5, 21))
+        plt.grid(True, alpha=0.3)
+        plt.savefig(os.path.join(self.save_path, 'profile_MAE_Hourly.png'))
+        plt.close()
+
+    # ==========================================================================
+    #  FASE 2: ANÁLISE DE CENÁRIOS FÍSICOS (NOVO)
+    # ==========================================================================
+
+    def _find_representative_days(self):
+        """
+        Lógica interna para encontrar dias de Céu Claro e Dias Nublados automaticamente.
+        Critério:
+        - Céu Claro: Alta soma de energia + Baixa variabilidade (curva lisa).
+        - Nublado/Transiente: Energia média + Alta variabilidade (zigue-zague).
+        """
+        # Agrupa dados observados por data
+        # Pega apenas o primeiro modelo para analisar os dados observados (que são iguais para todos)
+        first_model = self.df['Modelo'].unique()[0]
+        df_base = self.df[self.df['Modelo'] == first_model].copy()
+        
+        daily_stats = []
+        for date, group in df_base.groupby('Date'):
+            if len(group) < 10: continue # Pula dias incompletos
+            
+            energy_sum = group['Observado'].sum()
+            # Variabilidade = Desvio padrão da primeira derivada (mudança hora a hora)
+            volatility = group['Observado'].diff().std()
+            
+            daily_stats.append({
+                'Date': date,
+                'Energy': energy_sum,
+                'Volatility': volatility
+            })
+            
+        stats_df = pd.DataFrame(daily_stats)
+        if stats_df.empty: return None, None
+        
+        # Encontra Céu Claro: Alta Energia e Baixa Volatilidade (relativa à energia)
+        # Ordena por energia decrescente
+        stats_df = stats_df.sort_values('Energy', ascending=False)
+        # Pega o top 10% de energia e escolhe o de menor volatilidade
+        top_energy = stats_df.head(int(len(stats_df)*0.2)) 
+        clear_sky_day = top_energy.sort_values('Volatility').iloc[0]['Date']
+        
+        # Encontra Sombreamento/Nublado: Volatilidade Máxima
+        cloudy_day = stats_df.sort_values('Volatility', ascending=False).iloc[0]['Date']
+        
+        return clear_sky_day, cloudy_day
+
+    def plot_scenario_days(self):
+        """
+        Gera curvas de geração (Obs vs Prev) para dias específicos encontrados automaticamente.
+        """
+        print("🔍 Buscando dias representativos (Céu Claro vs Nublado)...")
+        date_clear, date_cloudy = self._find_representative_days()
+        
+        scenarios = {
+            'Ceu_Claro': date_clear,
+            'Nublado_Transiente': date_cloudy
+        }
+        
+        for label, date_obj in scenarios.items():
+            if date_obj is None: continue
+            
+            print(f"   📅 Plotando {label}: {date_obj}")
+            
+            # Filtra dados desse dia
+            day_data = self.df[self.df['Date'] == date_obj].sort_values('Timestamp')
+            
+            plt.figure(figsize=(14, 7))
+            
+            # Plota Observado (Preto, linha grossa)
+            # Pega de um modelo só para não duplicar linha
+            one_model_data = day_data[day_data['Modelo'] == day_data['Modelo'].unique()[0]]
+            plt.plot(one_model_data['Timestamp'], one_model_data['Observado'], 
+                     color='black', label='Observado (Real)', linewidth=2.5, zorder=10)
+            
+            # Plota Previsão de cada Modelo
+            sns.lineplot(data=day_data, x='Timestamp', y='Previsto', hue='Modelo', 
+                         linewidth=1.5, alpha=0.8)
+            
+            plt.title(f'Análise de Cenário: {label.replace("_", " ")} ({date_obj})')
+            plt.ylabel('Potência (kW)')
+            plt.xlabel('Horário')
+            
+            # Formata eixo X para mostrar horas
+            import matplotlib.dates as mdates
+            plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
+            
+            plt.legend()
+            plt.grid(True, alpha=0.3)
+            plt.savefig(os.path.join(self.save_path, f'scenario_{label}.png'))
+            plt.close()
