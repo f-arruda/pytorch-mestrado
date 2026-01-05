@@ -4,76 +4,65 @@ import pandas as pd
 import numpy as np
 
 class SolarEfficientDataset(Dataset):
-    def __init__(self, df, input_tag, n_past, n_future):
+    def __init__(self, df: pd.DataFrame, feature_cols: list, target_col: str, n_past: int, n_future: int):
         """
-        df: DataFrame com índice datetime contínuo (use df.asfreq('H') antes se tiver buracos).
-        input_tag: Lista de colunas de entrada (features).
-        n_past: Tamanho da janela do passado (horas).
-        n_future: Tamanho da janela do futuro (horas).
+        Dataset profissional que separa explicitamente Features (X) e Target (Y).
+        
+        Args:
+            df: DataFrame com índice datetime contínuo.
+            feature_cols: Lista com os nomes das colunas de entrada (X).
+            target_col: Nome da coluna alvo (Y).
+            n_past: Tamanho da janela do passado.
+            n_future: Tamanho da janela do futuro.
         """
         self.n_past = n_past
         self.n_future = n_future
+        self.feature_cols = feature_cols
+        self.target_col = target_col
         
-        # 1. Converter para Float32 (Padrão PyTorch) e Numpy para velocidade máxima
-        # Mantemos os dados brutos na memória (apenas uma cópia)
-        self.data_input = torch.tensor(df[input_tag].values, dtype=torch.float32)
-        self.data_target = torch.tensor(df[['target']].values, dtype=torch.float32)
+        # Validação básica
+        missing_features = [c for c in feature_cols if c not in df.columns]
+        if missing_features:
+            raise ValueError(f"Features faltando no DataFrame: {missing_features}")
+        if target_col not in df.columns:
+            raise ValueError(f"Target '{target_col}' não encontrado no DataFrame.")
+
+        # Conversão para Tensor (Mantém na GPU/CPU memória apenas o necessário)
+        # X: Apenas as colunas de feature
+        self.data_input = torch.tensor(df[feature_cols].values, dtype=torch.float32)
+        # Y: Apenas a coluna de target
+        self.data_target = torch.tensor(df[[target_col]].values, dtype=torch.float32)
+        
         self.timestamps = df.index
         
-        print("Calculando índices válidos... (Isso roda uma vez só)")
-        self.valid_indices = self._precompute_valid_indices(df, input_tag)
-        print(f"Total de janelas válidas encontradas: {len(self.valid_indices)}")
+        # Precomputação de índices (Lógica vetorizada mantida)
+        self.valid_indices = self._precompute_valid_indices(df, feature_cols, target_col)
+        print(f"✅ Dataset pronto. Amostras válidas: {len(self.valid_indices)}")
 
-    def _precompute_valid_indices(self, df, input_tag):
-        """
-        Substitui seu loop 'for' lento por operações vetorizadas rápidas.
-        Retorna uma lista de inteiros onde é seguro começar uma janela.
-        """
+    def _precompute_valid_indices(self, df, feature_cols, target_col):
         valid_starts = []
         n_total = len(df)
         
-        # Converte colunas para numpy para checagem rápida
-        pot_bt = df['target'].values
-        inputs = df[input_tag].values
+        # Converte para numpy para velocidade
+        targets = df[target_col].values
+        inputs = df[feature_cols].values
         
-        # Criação de máscaras booleanas (True/False) para todo o dataset de uma vez
-        
-        # 1. Onde Pot_BT não é nulo?
-        not_null_pot = ~np.isnan(pot_bt)
-        
-        # 2. Onde não tem '-1' (Sua regra específica)
-        no_minus_one = (pot_bt != -1)
-        
-        # 3. Onde Inputs não são nulos? (Checa se há algum NaN na linha)
+        # Máscaras booleanas
+        not_null_target = ~np.isnan(targets)
+        no_minus_one = (targets != -1)
         not_null_input = ~np.isnan(inputs).any(axis=1)
 
-        # Agora iteramos apenas índices inteiros, mas checamos as janelas matematicamente
-        # Precisamos de espaço para n_past atrás e n_future na frente
-        
+        # Loop otimizado
         for i in range(self.n_past, n_total - self.n_future + 1):
-            
-            # --- Validação Vetorizada (Sua lógica original traduzida) ---
-            
-            # A. Validação do Passado (X)
-            # Slice: [i - n_past : i]
-            # Checa se todos os inputs nesse intervalo são válidos (não nulos)
+            # Validação do Passado (X)
             if not np.all(not_null_input[i - self.n_past : i]):
-                continue # Pula se tiver NaN no passado
+                continue 
                 
-            # B. Validação do Futuro (Y)
-            # Slice: [i : i + n_future]
-            # Checa se Pot_BT não tem nulos E não tem -1 nesse intervalo
-            future_pot = pot_bt[i : i + self.n_future]
-            future_validity = not_null_pot[i : i + self.n_future] & no_minus_one[i : i + self.n_future]
-            
+            # Validação do Futuro (Y)
+            future_validity = not_null_target[i : i + self.n_future] & no_minus_one[i : i + self.n_future]
             if not np.all(future_validity):
-                continue # Pula se tiver NaN ou -1 no futuro
+                continue 
             
-            # C. (Opcional) Checagem de Continuidade de Tempo
-            # Se você já usou df.asfreq('H'), isso é garantido. 
-            # Se não, precisaria checar: time[i] - time[i-n_past] == n_past hours
-            
-            # Se passou em tudo, salva o índice 'i' (que é o tempo 't' da previsão)
             valid_starts.append(i)
             
         return valid_starts
@@ -82,15 +71,12 @@ class SolarEfficientDataset(Dataset):
         return len(self.valid_indices)
 
     def __getitem__(self, idx):
-        # Mágica do Lazy Loading:
-        # Recebemos um índice virtual (0, 1, 2...) e traduzimos para o índice real do DF
         real_idx = self.valid_indices[idx]
         
-        # Recorta os Tensors que já estão na memória
-        # X: Do passado até agora (exclusivo)
+        # X: Features do passado
         x = self.data_input[real_idx - self.n_past : real_idx]
         
-        # Y: Do agora até o futuro
+        # Y: Target do futuro
         y = self.data_target[real_idx : real_idx + self.n_future]
         
         return x, y

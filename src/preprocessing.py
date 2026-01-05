@@ -192,9 +192,9 @@ class SolarPreprocessor(BaseEstimator, TransformerMixin):
         cols_x = [c for c in self.features_to_scale if c in df.columns]
         if cols_x: self.scaler_x.fit(df[cols_x])
             
-        if self.target_col_internal in df.columns:
-            target_norm = df[[self.target_col_internal]] / self.nominal_power
-            self.scaler_y.fit(target_norm)
+        #if self.target_col_internal in df.columns:
+        #    target_norm = df[[self.target_col_internal]] / self.nominal_power
+        #    self.scaler_y.fit(target_norm)
 
         self._is_fitted = True
         return self
@@ -216,8 +216,8 @@ class SolarPreprocessor(BaseEstimator, TransformerMixin):
         cols_x = [c for c in self.features_to_scale if c in df.columns]
         if cols_x: df[cols_x] = self.scaler_x.transform(df[cols_x])
             
-        if self.target_col_internal in df.columns:
-            df[[self.target_col_internal]] = self.scaler_y.transform(df[[self.target_col_internal]])
+        #if self.target_col_internal in df.columns:
+        #    df[[self.target_col_internal]] = self.scaler_y.transform(df[[self.target_col_internal]])
 
         return df.fillna(0)
 
@@ -250,7 +250,7 @@ class SolarPreprocessor(BaseEstimator, TransformerMixin):
         df['temp_cell'] = df['temp_amb'] + (df['ghi'] / term_vento)
         
         efficiency_factor = 1 - CONSTANTS['GAMMA_SI'] * (df['temp_cell'] - CONSTANTS['T_STC'])
-        df['pot_cs'] = self.nominal_power * (df['ghi'] / CONSTANTS['G_STC']) * efficiency_factor
+        df['pot_cs'] = self.nominal_power * (df['ghi_cs_theo'] / CONSTANTS['G_STC']) * efficiency_factor
         
         if self.target_col_internal in df.columns:
             denom = df['pot_cs'].replace(0, np.nan)
@@ -298,15 +298,15 @@ class SolarPreprocessor(BaseEstimator, TransformerMixin):
     def save_scalers(self, output_dir: str):
         os.makedirs(output_dir, exist_ok=True)
         joblib.dump(self.scaler_x, os.path.join(output_dir, 'scaler_X.pkl'))
-        joblib.dump(self.scaler_y, os.path.join(output_dir, 'scaler_Y.pkl'))
+        #joblib.dump(self.scaler_y, os.path.join(output_dir, 'scaler_Y.pkl'))
         print(f"💾 Scalers salvos em: {output_dir}")
 
     def load_scalers(self, input_dir: str):
         path_x = os.path.join(input_dir, 'scaler_X.pkl')
-        path_y = os.path.join(input_dir, 'scaler_Y.pkl')
-        if not (os.path.exists(path_x) and os.path.exists(path_y)):
-            raise FileNotFoundError(f"Scalers não encontrados em {input_dir}")
+        #path_y = os.path.join(input_dir, 'scaler_Y.pkl')
+        #if not (os.path.exists(path_x) and os.path.exists(path_y)):
+        #    raise FileNotFoundError(f"Scalers não encontrados em {input_dir}")
         self.scaler_x = joblib.load(path_x)
-        self.scaler_y = joblib.load(path_y)
+        #self.scaler_y = joblib.load(path_y)
         self._is_fitted = True
         print(f"♻️  Scalers carregados de: {input_dir}")

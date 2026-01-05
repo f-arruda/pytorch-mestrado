@@ -1,4 +1,3 @@
 Modelo,RMSE (kW),MAE (kW),R2,Skill Score (%)
-2att_EDLSTM_Attention,6.7922,4.2787,0.9103,56.6
-EDLSTM_PAZTUVD,7.0425,4.6589,0.9035,55.0
-Persistencia,15.6503,11.0723,0.5237,0.0
+EDLSTM_K_Factor,4.8451,1.9971,0.9367,21.98
+Persistencia,6.21,2.4924,0.896,0.0

@@ -1,0 +1,49 @@
+{
+    "csv_path": "data/pv0.csv",
+    "split_ratios": {
+        "train": 0.8,
+        "val": 0.2
+    },
+    "preprocessing": {
+        "latitude": -23.56,
+        "longitude": -46.73,
+        "timezone": "Etc/GMT+3",
+        "nominal_power": 156.0,
+        "pv_power_col_csv": "Pot_BT",
+        "column_mapping": {
+            "Pot_BT": "target",
+            "Irradia\u00e7\u00e3o Global hor\u00e1ria(horizontal) kWh/m2": "ghi",
+            "Irradia\u00e7\u00e3o Difusa hor\u00e1ria kWh/m2": "dhi",
+            "Irradia\u00e7\u00e3o Global hor\u00e1ria(Inclinada 27\u00b0) kWh/m2": "irrad_poa",
+            "Temperatura ambiente \u00b0C": "temp_amb",
+            "Umidade Relativa %": "humidity",
+            "Velocidade m\u00e9dia do vento m/s": "wind_speed"
+        }
+    },
+    "prediction_mode": "clearsky_ratio",
+    "target_col": "k",
+    "feature_cols": [
+        "temp_amb",
+        "wind_speed",
+        "humidity",
+        "fracao_difusa",
+        "irr_clearsky_ratio",
+        "k"
+    ],
+    "model_type": "EDLSTM_K_Factor",
+    "cell_type": "lstm",
+    "input_seq_len": 24,
+    "output_seq_len": 1,
+    "hidden_sizes": [
+        128,
+        64
+    ],
+    "learning_rate": 0.001,
+    "batch_size": 64,
+    "epochs": 100,
+    "dropout": 0.1,
+    "bidirectional": false,
+    "use_attention": false,
+    "use_feature_attention": false,
+    "patience": 20
+}

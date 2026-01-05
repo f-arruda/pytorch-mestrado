@@ -1,0 +1,26 @@
+{
+    "input_seq_len": 12,
+    "output_seq_len": 1,
+    "hidden_sizes": [
+        200,
+        64
+    ],
+    "learning_rate": 0.001,
+    "batch_size": 64,
+    "epochs": 1000,
+    "dropout": 0.15,
+    "bidirectional": false,
+    "use_attention": true,
+    "use_feature_attention": true,
+    "patience": 50,
+    "model_type": "2att_EDLSTM_sem_target",
+    "feature_cols": [
+        "temp_amb",
+        "wind_speed",
+        "humidity",
+        "cos_zenith",
+        "sin_azimuth",
+        "fracao_difusa",
+        "irr_clearsky_ratio"
+    ]
+}
