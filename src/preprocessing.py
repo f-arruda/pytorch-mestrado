@@ -71,8 +71,8 @@ class SolarPreprocessor(BaseEstimator, TransformerMixin):
         if column_mapping:
             self.column_mapping.update(column_mapping)
             
-        self.target_col_internal = self.column_mapping.get(target_col, 'target')
-        self.features_to_scale = features_to_scale or ['temp_amb', 'wind_speed', 'ghi']
+        self.target_col_internal = target_col
+        self.features_to_scale = features_to_scale 
         
         self.scaler_x = MinMaxScaler(feature_range=(0, 1))
         self.scaler_y = MinMaxScaler(feature_range=(0, 1))
@@ -239,12 +239,26 @@ class SolarPreprocessor(BaseEstimator, TransformerMixin):
         return df
 
     def _calculate_physics_features(self, df):
+        # calculo do clearness index (Kt)
+        cos_zen = np.cos(np.deg2rad(df['zenith']))
+        cos_zen = cos_zen.clip(lower=0)
+
+        df['ghi_extra'] = df['extra_rad'] * cos_zen
+
+        df['kt'] = df['ghi']/df['ghi_extra'].replace(np.nan,0)
+        df['kt'] = df['kt'].fillna(0)
+        df['kt'] = df['kt'].clip(0, 1)
+
+        # calculo do k caso não tenha temperatura, vento e ghi
+        """
         required = ['temp_amb', 'wind_speed', 'ghi']
         if not all(col in df.columns for col in required):
             if self.target_col_internal in df.columns:
                 df['k'] = df[self.target_col_internal] / self.nominal_power
             return df
+        """
 
+        # calculo das variáveis necessárias para fazer o a conversão de irrad em pot
         term_vento = self.u0 + self.u1 * df['wind_speed']
         term_vento = term_vento.replace(0, 0.1) 
         df['temp_cell'] = df['temp_amb'] + (df['ghi'] / term_vento)
@@ -252,20 +266,36 @@ class SolarPreprocessor(BaseEstimator, TransformerMixin):
         efficiency_factor = 1 - CONSTANTS['GAMMA_SI'] * (df['temp_cell'] - CONSTANTS['T_STC'])
         df['pot_cs'] = self.nominal_power * (df['ghi_cs_theo'] / CONSTANTS['G_STC']) * efficiency_factor
         
+        # calculo do kc
+        """ solução antiga proposta pelo gemini
         if self.target_col_internal in df.columns:
-            denom = df['pot_cs'].replace(0, np.nan)
+            denom = df['pot_cs'].replace(0, np.nan)     # <------ revisar
             df['k'] = df[self.target_col_internal] / denom
             df['k'] = df['k'].fillna(0).clip(upper=1.2)
+        """
+        df['k'] = df['ghi']/df['ghi_cs_theo']
+        df['k'] = df['k'].replace(np.nan, 0).fillna(0)
+        df['k'] = df['k'].clip(0, 1)
+
         return df
 
     def _create_lag_features(self, df):
-        if 'k' in df.columns:
+        # Persistencia para potencia
+        if self.target_col_internal == 'target':
+            if 'k' in df.columns:
+                for lag in [1, 2, 3]:
+                    col = f'k_lag{lag}'
+                    df[col] = (df['target']/df['pot_cs']).clip(0,1).shift(periods=lag)
+                    if 'pot_cs' in df.columns:
+                        df[f'P{lag}'] = df['pot_cs'] * df[col]
+                        df[f'P{lag}'] = df[f'P{lag}'].replace(np.inf, 0)
+                df.drop([f'k_lag{i}' for i in [1,2,3]], axis=1, inplace=True, errors='ignore')
+        
+        # Persistencia para K
+        elif self.target_col_internal == 'k':
             for lag in [1, 2, 3]:
-                col = f'k_lag{lag}'
-                df[col] = df['k'].shift(lag)
-                if 'pot_cs' in df.columns:
-                    df[f'P{lag}'] = df['pot_cs'] * df[col]
-            df.drop([f'k_lag{i}' for i in [1,2,3]], axis=1, inplace=True, errors='ignore')
+                    df[f'P{lag}'] = (df['k']).shift(lag) 
+        
         return df
 
     def _create_angular_features(self, df):
@@ -286,7 +316,7 @@ class SolarPreprocessor(BaseEstimator, TransformerMixin):
 
         if 'humidity' in df.columns: df['humidity'] = df['humidity'] / 100.0
 
-        cols_pot = [self.target_col_internal, 'P1', 'P2', 'P3']
+        cols_pot = ['target', 'P1', 'P2', 'P3']
         for col in cols_pot:
             if col in df.columns: df[col] = df[col] / self.nominal_power
 

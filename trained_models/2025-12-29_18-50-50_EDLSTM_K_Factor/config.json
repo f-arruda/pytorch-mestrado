@@ -4,6 +4,7 @@
         "train": 0.8,
         "val": 0.2
     },
+    "test_year":2022,
     "preprocessing": {
         "latitude": -23.56,
         "longitude": -46.73,

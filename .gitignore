@@ -1,2 +1,4 @@
 # Ignore a pasta:
 analysis_outputs
+trained_models
+notebooks

@@ -20,20 +20,27 @@ from models.encdec_model import EncDecModel
 from src.dataset_module import SolarEfficientDataset
 from src.preprocessing import SolarPreprocessor
 from utils.early_stopping import EarlyStopping
+from loss_function.cpiloss import CPILoss
 
 # ================= CONFIGURAÇÃO CENTRALIZADA =================
 CONFIG = {
-    # --- 1. DADOS E DIVISÃO ---
+    # --- 1. PATH DA BASE DE DADOS ---
     'csv_path': 'data/pv0.csv',
-    'split_ratios': {'train': 0.8, 'val': 0.2}, 
     
-    # --- 2. PRÉ-PROCESSAMENTO (Física & Mapeamento) ---
+    # --- 2. DIVISÃO DA BASE DE TREINO, TESTE E VALIDAÇÃO ---
+    'split_ratios': {'train': 0.8, 'val': 0.2}, 
+    'test_year':2022,
+
+    # --- 3. PRÉ-PROCESSAMENTO (Física & Mapeamento) ---
     'preprocessing': {
         'latitude': -23.56,
         'longitude': -46.73,
+        'altitude': 0,
         'timezone': 'Etc/GMT+3',
         'nominal_power': 156.0,
-        'pv_power_col_csv': 'Pot_BT',
+        'start_year': 2018,
+        'features_to_scale':['temp_amb','wind_speed'],
+        #'pv_power_col_csv': 'Pot_BT', # <--- AVALIAR PARA RETIRAR
         
         # DOCUMENTAÇÃO VIVA: Mapeamento "De -> Para"
         # O Preprocessor usará isso para renomear as colunas internamente.
@@ -50,44 +57,46 @@ CONFIG = {
         }
     },
 
-    # --- 3. ESTRATÉGIA DE MODELAGEM ---
+    # --- 4. ESTRATÉGIA DE MODELAGEM ---
     # mode: 'clearsky_ratio' (prevê k) ou 'direct' (prevê kW normalizado)
-    'prediction_mode': 'clearsky_ratio',
+    'prediction_mode': 'direct',
     
     # Qual variável o modelo vai prever? ('k' ou 'target')
-    'target_col': 'k', 
+    'target_col': 'target', 
     
     # Features de entrada
     'feature_cols': [
         'temp_amb', 'wind_speed', 'humidity',  
-        'fracao_difusa', 'irr_clearsky_ratio',
-        'k'
+        'fracao_difusa', 'irr_clearsky_ratio', 'kt'
     ],
 
-    # --- 4. ARQUITETURA E TREINO ---
-    'model_type': 'EDLSTM_K_Factor',
+    # --- 5. ARQUITETURA E TREINO ---
+    'model_type': 'Teste_2',
     'cell_type': 'lstm',
     'input_seq_len': 24,
     'output_seq_len': 1,
     'hidden_sizes': [128, 64],
     'learning_rate': 0.001,
-    'batch_size': 64,
+    'batch_size': 32,
     'epochs': 100,
     'dropout': 0.1,
     'bidirectional': False,
     'use_attention': False,
     'use_feature_attention': False,
-    'patience': 20,
+    'patience': 10,
+    'loss_function':'cpi_loss'      # "cpi_loss", "mse"
 }
 
 OUTPUT_ROOT = 'trained_models'
 ARTIFACTS_DIR = 'artifacts'
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
+# SALVA A CONFIGURAÇÃO DE TREINAMENTO
 def save_config(config, path):
     with open(os.path.join(path, 'config.json'), 'w') as f:
         json.dump(config, f, indent=4)
 
+# SALVA A CURVA DE TREINAMENTO
 def plot_learning_curve(train_losses, val_losses, save_path):
     plt.figure(figsize=(10, 6))
     plt.plot(train_losses, label='Train Loss')
@@ -133,15 +142,18 @@ def main():
     preprocessor = SolarPreprocessor(
         latitude=pp_conf['latitude'], 
         longitude=pp_conf['longitude'], 
+        altitude=pp_conf['altitude'],
         timezone=pp_conf['timezone'], 
         nominal_power=pp_conf['nominal_power'], 
-        target_col=pp_conf['pv_power_col_csv'],
-        column_mapping=pp_conf['column_mapping'] # <--- AQUI ACONTECE A MÁGICA DOCUMENTADA
+        start_year=pp_conf['start_year'],
+        features_to_scale=pp_conf['features_to_scale'],
+        target_col=CONFIG['target_col'], # <--- unica variavel que não vem do preprocessing
+        column_mapping=pp_conf['column_mapping'] 
     )
     
     preprocessor.fit(df)
     preprocessor.save_scalers(exp_dir)
-    preprocessor.save_scalers(ARTIFACTS_DIR)
+    #preprocessor.save_scalers(ARTIFACTS_DIR)
     
     # O método transform usa o column_mapping para renomear as colunas
     df_processed = preprocessor.transform(df)
@@ -158,7 +170,8 @@ def main():
         save_config(CONFIG, exp_dir)
 
     # 5. Split Temporal (Último Ano = Teste)
-    last_year = df_processed.index.year.max()
+    #last_year = df_processed.index.year.max() <---- REMOVER FUTURAMENTE
+    last_year = CONFIG['test_year']
     print(f"📅 Separando ano {last_year} para TESTE.")
     
     test_df = df_processed[df_processed.index.year == last_year].copy()
@@ -214,7 +227,12 @@ def main():
         dropout_prob=CONFIG['dropout']
     ).to(DEVICE)
 
-    criterion = nn.MSELoss()
+    # modificar o criterion muda a função de erro implementado a CPILoss
+    if CONFIG['loss_function'] == 'mse':
+        criterion = nn.MSELoss()
+    elif CONFIG['loss_function'] == 'cpi_loss':
+        criterion = CPILoss()
+
     optimizer = optim.Adam(model.parameters(), lr=CONFIG['learning_rate'])
     early_stopping = EarlyStopping(patience=CONFIG['patience'], verbose=True, path=os.path.join(exp_dir, 'best_model.pt'))
 
@@ -269,7 +287,6 @@ def main():
         "epochs": len(train_losses),
         "time_sec": time.time() - start_time,
         "model_path": os.path.join(exp_dir, 'best_model.pt'),
-        "config_snapshot": CONFIG
     }
     with open(os.path.join(exp_dir, 'metrics.json'), 'w') as f:
         json.dump(final_metrics, f, indent=4)
