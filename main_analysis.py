@@ -10,6 +10,7 @@ from torch.utils.data import DataLoader
 # ================= CONFIGURAÇÃO =================
 EXPERIMENTS_DIRS = [
     "trained_models/2026-01-07_18-40-03_Teste_2",
+    "trained_models/2026-01-09_18-33-37_Teste_PV",
 ]
 
 OUTPUT_FILE = "analysis_outputs/TABELA_COMPARATIVA_FINAL.csv"
@@ -135,43 +136,58 @@ def process_model(exp_dir):
             val = val.item()
         pred_scalars.append(float(val))
 
-    # 8. Alinhamento via Slice (Igual ao Notebook)
-    # O dataset começa a prever a partir de n_past.
-    # Recortamos o df_test original para casar com o tamanho das previsões.
+    # ==============================================================================
+    # 8. Alinhamento Exato (CORREÇÃO PARA FILTRO NOTURNO)
+    # ==============================================================================
+    # Como o dataset pulou a noite, não podemos apenas fazer slice no df_test.
+    # Precisamos recuperar os timestamps exatos que o dataset selecionou.
     
-    # Corte inicial: Pula os inputs
-    df_aligned = df_test.iloc[n_past:].copy()
+    # Recupera os índices reais que o dataset considerou "Dia" e usou para previsão
+    valid_positions = dataset.valid_indices
     
-    # Corte final: Garante que o tamanho bata com as previsões (caso sobre algo no fim)
-    if len(df_aligned) > len(pred_scalars):
-        df_aligned = df_aligned.iloc[:len(pred_scalars)]
-    elif len(df_aligned) < len(pred_scalars):
-        # Caso raro onde o dataset gerou menos que o slice (padding), cortamos a sobra da previsão
-        pred_scalars = pred_scalars[:len(df_aligned)]
+    # Trava de segurança para garantir tamanhos iguais
+    n_preds = len(pred_scalars)
+    n_inds = len(valid_positions)
+    
+    if n_preds != n_inds:
+        print(f"⚠️ Sincronizando: Previsões ({n_preds}) vs Índices ({n_inds})")
+        min_len = min(n_preds, n_inds)
+        pred_scalars = pred_scalars[:min_len]
+        valid_positions = valid_positions[:min_len]
 
-    # Adiciona a previsão normalizada
-    df_aligned['pred_norm'] = pred_scalars
+    # 1. Mapeia as previsões para os Timestamps corretos (pula a noite no index)
+    aligned_dates = df_test.index[valid_positions]
+    
+    # 2. Cria dataframe auxiliar indexado pela data correta
+    df_preds_only = pd.DataFrame({'pred_norm': pred_scalars}, index=aligned_dates)
+    
+    # 3. Faz o Join mantendo apenas os horários que existem na previsão
+    df_aligned = df_test.join(df_preds_only, how='inner')
 
-    # 9. Desnormalização para kW (Para o CSV final)
+    # ==============================================================================
+    # 9. Desnormalização e Montagem da Tabela
+    # ==============================================================================
     nominal_power = pp_params['nominal_power']
     target_col = config.get('target_col', 'target')
     
-    # Estratégia de reconstrução
     records = []
+    
+    # Iteramos sobre o df_aligned que agora tem APENAS os momentos válidos (dia)
     for idx, row in df_aligned.iterrows():
         # Recupera valores normalizados
         obs_norm = row.get(target_col, 0.0)
         pred_norm = row['pred_norm']
         p1_norm = row.get('P1', 0.0)
         
-        # Lógica de K vs Potência
+        # Lógica de reconstrução (se target for 'k', multiplica pelo clear sky)
         if target_col == 'k':
             pot_cs = row.get('pot_cs', 0.0)
+            # Se for k, a previsão é k * pot_cs
             obs_kw = obs_norm * pot_cs
             pred_kw = pred_norm * pot_cs
-            pers_kw = p1_norm * pot_cs
+            pers_kw = p1_norm * pot_cs # P1 aqui já deve ser k_lag1
         else:
-            # Potência Direta (divide por nominal)
+            # Se for target direto (kW normalizado), multiplica pela potência nominal
             obs_kw = obs_norm * nominal_power
             pred_kw = pred_norm * nominal_power
             pers_kw = p1_norm * nominal_power

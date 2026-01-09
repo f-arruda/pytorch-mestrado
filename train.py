@@ -71,8 +71,8 @@ CONFIG = {
     ],
 
     # --- 5. ARQUITETURA E TREINO ---
-    'model_type': 'Teste_2',
-    'cell_type': 'lstm',
+    'model_type': 'Teste_PV',
+    'cell_type': 'gru',
     'input_seq_len': 24,
     'output_seq_len': 1,
     'hidden_sizes': [128, 64],
@@ -83,8 +83,8 @@ CONFIG = {
     'bidirectional': False,
     'use_attention': False,
     'use_feature_attention': False,
-    'patience': 10,
-    'loss_function':'cpi_loss'      # "cpi_loss", "mse"
+    'patience': 5,
+    'loss_function':'mse'      # "cpi_loss", "mse"
 }
 
 OUTPUT_ROOT = 'trained_models'

@@ -1,6 +1,0 @@
-{
-    "best_val_loss": 0.0022514828031749597,
-    "epochs_trained": 94,
-    "training_time_sec": 118.33540225028992,
-    "model_path": "trained_models/2025-12-26_20-03-18_2att_EDLSTM_Attention/best_model.pt"
-}

@@ -52,8 +52,18 @@ class SolarEfficientDataset(Dataset):
         no_minus_one = (targets != -1)
         not_null_input = ~np.isnan(inputs).any(axis=1)
 
+        # Nova máscara booleana vinda do preprocessing
+        # Se por acaso não tiver a coluna, assume tudo True (retrocompatibilidade)
+        is_day_mask = df['is_day'].values if 'is_day' in df.columns else np.ones(n_total, dtype=bool)
+
         # Loop otimizado
         for i in range(self.n_past, n_total - self.n_future + 1):
+            
+            # Verifica se o horizonte de previsão (Target) cai de dia
+            future_indices = range(i, i + self.n_future)
+            if not np.all(is_day_mask[future_indices]):
+                continue # Pula essa amostra (é noite ou transição)
+
             # Validação do Passado (X)
             if not np.all(not_null_input[i - self.n_past : i]):
                 continue 

@@ -212,6 +212,8 @@ class SolarPreprocessor(BaseEstimator, TransformerMixin):
         df = self._create_lag_features(df)
         df = self._create_angular_features(df)
         df = self._apply_normalizations(df)
+
+        df['is_day'] = df['zenith'] < 85 # adição para pegar só os momentos com Sol
         
         cols_x = [c for c in self.features_to_scale if c in df.columns]
         if cols_x: df[cols_x] = self.scaler_x.transform(df[cols_x])

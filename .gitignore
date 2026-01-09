@@ -2,3 +2,5 @@
 analysis_outputs
 trained_models
 notebooks
+artifacts
+.ipynb_checkpoints
