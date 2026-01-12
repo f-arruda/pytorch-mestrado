@@ -6,11 +6,28 @@ class CPILoss(nn.Module):
         super(CPILoss, self).__init__()
         self.epsilon = epsilon
 
-    def forward(self, output, target):
+    def forward(self, output, target, mask = None):
 
         # Garantir que são 1D para cálculos estatísticos
         pred_flat = output.view(-1)
         target_flat = target.view(-1)
+
+        # Lógica de ativação/desativação
+        if mask is not None:
+            # MODO COM MÁSCARA (Ex: Fator K)
+            mask_flat = mask.view(-1).bool()
+            pred_flat = pred_flat[mask_flat]
+            target_flat = target_flat[mask_flat]
+            
+            # Segurança: Se o batch for todo noturno, retorna zero gradiente
+            if pred_flat.numel() == 0:
+                return torch.tensor(0.0, device=output.device, requires_grad=True)
+        
+        else:
+            # MODO SEM MÁSCARA (Ex: Potência)
+            # Segue o fluxo normal, calculando erro inclusive para zeros noturnos 
+            pass
+            
         n = pred_flat.size(0)
         
         # --- 1. Cálculo do NRMSE (Eq. 4 e 5) ---

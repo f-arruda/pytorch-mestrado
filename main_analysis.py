@@ -9,8 +9,8 @@ from torch.utils.data import DataLoader
 
 # ================= CONFIGURAÇÃO =================
 EXPERIMENTS_DIRS = [
-    "trained_models/2026-01-07_18-40-03_Teste_2",
-    "trained_models/2026-01-09_18-33-37_Teste_PV",
+    #"trained_models/2026-01-07_18-40-03_Teste_2",
+    "trained_models/2026-01-12_15-26-32_Teste_k",
 ]
 
 OUTPUT_FILE = "analysis_outputs/TABELA_COMPARATIVA_FINAL.csv"
@@ -115,14 +115,17 @@ def process_model(exp_dir):
     # 6. Inferência
     print("   🔮 Gerando previsões...")
     preds_list = []
+    valid_mask_list = []
     
     with torch.no_grad():
-        for batch_x, batch_y in loader:
+        for batch_x, batch_y, batch_mask in loader:
             out = model(batch_x.to(DEVICE))
             preds_list.append(out.cpu().numpy())
+            valid_mask_list.append(batch_mask.cpu().numpy())
             
     # Concatena tudo: Shape (N_samples, Seq_Len, 1)
     y_pred_all = np.concatenate(preds_list, axis=0)
+    mask_all = np.concatenate(valid_mask_list, axis=0)
 
     # 7. Conversão para Lista de Escalares (Lógica do Notebook)
     # Extrai apenas o primeiro passo da previsão (Horizonte 1) para alinhar com o index seguinte
@@ -199,7 +202,29 @@ def process_model(exp_dir):
             'Modelo_Pred_kW': pred_kw
         })
 
-    return pd.DataFrame(records).set_index('Timestamp'), os.path.basename(exp_dir)
+    # ==============================================================================
+    # 10. Criação do DataFrame e Filtro Final
+    # ==============================================================================
+    is_day_vector = mask_all.flatten().astype(bool)
+
+    # 1. Cria o DataFrame completo (24h) com os resultados brutos
+    df_full = pd.DataFrame(records).set_index('Timestamp')
+
+    # 2. Garante que o vetor de máscara tenha o mesmo tamanho do DataFrame
+    # (Trava de segurança caso tenha havido algum corte no passo 8)
+    if len(is_day_vector) > len(df_full):
+        is_day_vector = is_day_vector[:len(df_full)]
+    elif len(is_day_vector) < len(df_full):
+        # Caso raro, mas se acontecer, cortamos o DF para evitar erro
+        df_full = df_full.iloc[:len(is_day_vector)]
+
+    # 3. Aplica o filtro: Mantém apenas as linhas onde is_day_vector == True (Dia)
+    # Como is_day_vector é um array booleano alinhado, podemos usar diretamente
+    df_day_only = df_full[is_day_vector]
+
+    print(f"   ✂️  Filtro Aplicado: {len(df_full)} linhas (24h) -> {len(df_day_only)} linhas (Dia)")
+
+    return df_day_only, os.path.basename(exp_dir)
 
 # ================= MAIN =================
 def main():

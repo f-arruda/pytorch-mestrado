@@ -21,6 +21,7 @@ from src.dataset_module import SolarEfficientDataset
 from src.preprocessing import SolarPreprocessor
 from utils.early_stopping import EarlyStopping
 from loss_function.cpiloss import CPILoss
+from loss_function.mseloss import MaskedMSELoss
 
 # ================= CONFIGURAÇÃO CENTRALIZADA =================
 CONFIG = {
@@ -59,10 +60,14 @@ CONFIG = {
 
     # --- 4. ESTRATÉGIA DE MODELAGEM ---
     # mode: 'clearsky_ratio' (prevê k) ou 'direct' (prevê kW normalizado)
-    'prediction_mode': 'direct',
+    'prediction_mode': 'clearsky_ratio',
     
     # Qual variável o modelo vai prever? ('k' ou 'target')
-    'target_col': 'target', 
+    'target_col': 'k', 
+
+    # mascara de dados noturnos
+    'use_mask':True,   # True = Ignora a noite (ideal para K)
+                        # False = Aprende a noite (ideal para Potência)
     
     # Features de entrada
     'feature_cols': [
@@ -71,7 +76,7 @@ CONFIG = {
     ],
 
     # --- 5. ARQUITETURA E TREINO ---
-    'model_type': 'Teste_PV',
+    'model_type': 'Teste_k',
     'cell_type': 'gru',
     'input_seq_len': 24,
     'output_seq_len': 1,
@@ -84,7 +89,7 @@ CONFIG = {
     'use_attention': False,
     'use_feature_attention': False,
     'patience': 5,
-    'loss_function':'mse'      # "cpi_loss", "mse"
+    'loss_function':'cpi_loss'      # "cpi_loss", "mse"
 }
 
 OUTPUT_ROOT = 'trained_models'
@@ -229,7 +234,7 @@ def main():
 
     # modificar o criterion muda a função de erro implementado a CPILoss
     if CONFIG['loss_function'] == 'mse':
-        criterion = nn.MSELoss()
+        criterion = MaskedMSELoss()
     elif CONFIG['loss_function'] == 'cpi_loss':
         criterion = CPILoss()
 
@@ -244,10 +249,11 @@ def main():
     for epoch in range(CONFIG['epochs']):
         model.train()
         batch_losses = []
-        for x, y in train_loader:
-            x, y = x.to(DEVICE), y.to(DEVICE)
+        for x, y, mask in train_loader:
+            x, y, mask = x.to(DEVICE), y.to(DEVICE), mask.to(DEVICE)
             optimizer.zero_grad()
             out = model(x)
+            active_mask = mask if CONFIG['use_mask'] else None
             loss = criterion(out, y)
             loss.backward()
             optimizer.step()
@@ -259,9 +265,10 @@ def main():
         model.eval()
         val_batch_losses = []
         with torch.no_grad():
-            for x, y in val_loader:
-                x, y = x.to(DEVICE), y.to(DEVICE)
+            for x, y, mask in val_loader:
+                x, y, mask = x.to(DEVICE), y.to(DEVICE), mask.to(DEVICE)
                 out = model(x)
+                active_mask = mask if CONFIG['use_mask'] else None
                 loss = criterion(out, y)
                 val_batch_losses.append(loss.item())
         

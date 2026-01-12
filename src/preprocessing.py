@@ -213,7 +213,8 @@ class SolarPreprocessor(BaseEstimator, TransformerMixin):
         df = self._create_angular_features(df)
         df = self._apply_normalizations(df)
 
-        df['is_day'] = df['zenith'] < 85 # adição para pegar só os momentos com Sol
+        # Define o limiar (ex: 85 graus). 1 = Dia (Considerar), 0 = Noite (Ignorar)
+        df['mask'] = np.where(df['zenith'] < 85, 1.0, 0.0)
         
         cols_x = [c for c in self.features_to_scale if c in df.columns]
         if cols_x: df[cols_x] = self.scaler_x.transform(df[cols_x])

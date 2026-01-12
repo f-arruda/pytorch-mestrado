@@ -32,6 +32,8 @@ class SolarEfficientDataset(Dataset):
         self.data_input = torch.tensor(df[feature_cols].values, dtype=torch.float32)
         # Y: Apenas a coluna de target
         self.data_target = torch.tensor(df[[target_col]].values, dtype=torch.float32)
+        # Mascará -> tensor
+        self.mask = torch.tensor(df['mask'].values, dtype=torch.float32)
         
         self.timestamps = df.index
         
@@ -52,18 +54,9 @@ class SolarEfficientDataset(Dataset):
         no_minus_one = (targets != -1)
         not_null_input = ~np.isnan(inputs).any(axis=1)
 
-        # Nova máscara booleana vinda do preprocessing
-        # Se por acaso não tiver a coluna, assume tudo True (retrocompatibilidade)
-        is_day_mask = df['is_day'].values if 'is_day' in df.columns else np.ones(n_total, dtype=bool)
-
         # Loop otimizado
         for i in range(self.n_past, n_total - self.n_future + 1):
             
-            # Verifica se o horizonte de previsão (Target) cai de dia
-            future_indices = range(i, i + self.n_future)
-            if not np.all(is_day_mask[future_indices]):
-                continue # Pula essa amostra (é noite ou transição)
-
             # Validação do Passado (X)
             if not np.all(not_null_input[i - self.n_past : i]):
                 continue 
@@ -88,5 +81,8 @@ class SolarEfficientDataset(Dataset):
         
         # Y: Target do futuro
         y = self.data_target[real_idx : real_idx + self.n_future]
+
+        # Mask: mascara de dia e noite
+        mask = self.mask[real_idx : real_idx + self.n_future]
         
-        return x, y
+        return x, y, mask
