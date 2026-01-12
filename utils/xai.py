@@ -36,7 +36,7 @@ class SolarXAIEngine:
         print("🔍 Calculando Importância Global (Ablation)...")
         importances_list = []
         with torch.backends.cudnn.flags(enabled=False):
-            for x, _ in dataloader:
+            for x, _, _ in dataloader:
                 x = x.to(self.device)
                 seq_len, n_feats = x.shape[1], x.shape[2]
                 mask = torch.arange(n_feats).view(1, 1, -1).repeat(1, seq_len, 1).to(self.device)
@@ -54,7 +54,7 @@ class SolarXAIEngine:
         prev_cudnn_state = torch.backends.cudnn.enabled
         torch.backends.cudnn.enabled = False
         try:
-            for x, _ in dataloader:
+            for x, _, _ in dataloader:
                 if count >= max_samples: break
                 x = x.to(self.device).requires_grad_()
                 current_wrapper = lambda inp: self._model_wrapper(inp, target_step_idx)

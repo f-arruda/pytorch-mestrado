@@ -18,7 +18,7 @@ DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 # Lista de experimentos para analisar
 EXPERIMENTS_DIRS = [
-    "trained_models/2026-01-07_18-40-03_Teste_2", 
+    "trained_models/2026-01-12_15-26-32_Teste_k", 
 ]
 
 OUTPUT_DIR = "analysis_outputs/Analise_XAI_Profunda"
@@ -184,11 +184,17 @@ def main():
             
             # Identifica indices no DF alinhado
             indicator = 'k' if 'k' in df_aligned.columns else 'irr_clearsky_ratio'
+
+            if 'zenith' in df_aligned.columns:
+                is_day = df_aligned['zenith'] < 85
+            else:
+                # Fallback: Assume que se K > 0 é dia (arriscado para nublado, mas serve)
+                is_day = df_aligned.index.hour.isin(range(7, 18))
             
             # Pega os ÍNDICES INTEIROS (0, 1, 2...) onde a condição é verdadeira
             # Como df_aligned está sincronizado com dataset, o índice 0 do df é o dataset[0]
-            indices_clear = np.where(df_aligned[indicator].values > 0.6)[0]
-            indices_cloudy = np.where(df_aligned[indicator].values < 0.3)[0]
+            indices_clear = np.where((df_aligned[indicator].values > 0.6) & is_day)[0]
+            indices_cloudy = np.where((df_aligned[indicator].values < 0.3) & is_day)[0]
             
             def analyze_subset(indices, label, fname):
                 if len(indices) == 0: return
@@ -208,23 +214,31 @@ def main():
             # 4. Casos de Erro (Com Timestamp no título)
             print("   🎯 [4/4] Casos Extremos...")
             errors_list = []
+            valid_mask_list = []
             with torch.no_grad():
-                for x_b, y_b in full_loader:
+                for x_b, y_b, mask_b in full_loader:
                     p = model(x_b.to(DEVICE))
                     # Pega apenas horizonte 1
                     err = torch.abs(p[:, 0, 0] - y_b[:, 0, 0].to(DEVICE)).cpu().numpy()
                     errors_list.append(err)
+                    valid_mask_list.append(mask_b[:, 0].cpu().numpy().astype(bool))
             
             if errors_list:
                 all_err = np.concatenate(errors_list)
-                
+                all_mask = np.concatenate(valid_mask_list)
                 # Garante tamanho igual
                 min_len = min(len(all_err), len(df_aligned))
                 all_err = all_err[:min_len]
+                all_mask = all_mask[:min_len]
+
+                err_for_best = all_err.copy()
+                err_for_best[~all_mask] = np.inf
+                err_for_worst = all_err.copy()
+                err_for_worst[~all_mask] = -1.0
                 
-                if len(all_err) > 0:
-                    best_idx = int(np.argmin(all_err))
-                    worst_idx = int(np.argmax(all_err))
+                if np.any(all_mask):
+                    best_idx = int(np.argmin(err_for_best))
+                    worst_idx = int(np.argmax(err_for_worst))
                     
                     # Pega Timestamps para o título
                     ts_best = df_aligned.index[best_idx]
