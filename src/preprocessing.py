@@ -62,7 +62,7 @@ class SolarPreprocessor(BaseEstimator, TransformerMixin):
                  degradation_rate: float = 0.05,
                  column_mapping: Optional[Dict[str, str]] = None,
                  features_to_scale: Optional[List[str]] = None,
-                 target_col: str = 'target',
+                 target_col: str = 'power',
                  kasten_corr: bool = False,
                  auto_identify_thermal_params: bool = True):
         
@@ -163,7 +163,7 @@ class SolarPreprocessor(BaseEstimator, TransformerMixin):
 
         # Filtra dados de sol pleno
         try:
-            mask = (df['ghi'] > 300) & (df[self.target_col_internal] > 0) & (df['wind_speed'] >= 0)
+            mask = (df['ghi'] > 300) & (df['target'] > 0) & (df['wind_speed'] >= 0)
             df_fit = df.loc[mask].dropna()
         except ValueError as e:
             print(f"⚠️ Erro de índice duplicado no fit: {e}. Pulando otimização.")
@@ -179,7 +179,7 @@ class SolarPreprocessor(BaseEstimator, TransformerMixin):
             return self.nominal_power * (ghi / CONSTANTS['G_STC']) * efficiency_loss
 
         X_data = (df_fit['ghi'].values, df_fit['temp_amb'].values, df_fit['wind_speed'].values)
-        Y_data = df_fit[self.target_col_internal].values
+        Y_data = df_fit['target'].values
 
         try:
             bounds = ([CONSTANTS['U0_BOUNDS'][0], CONSTANTS['U1_BOUNDS'][0]], 
@@ -197,15 +197,12 @@ class SolarPreprocessor(BaseEstimator, TransformerMixin):
         df = self._rename_columns(df)
         df = self._ensure_datetime_index(df) # Limpa duplicatas aqui
 
-        if self.auto_identify:
+        if self.auto_identify & (self.target_col_internal == 'power'):
             self._fit_thermal_parameters(df) # E limpa de novo dentro, por segurança
 
         cols_x = [c for c in self.features_to_scale if c in df.columns]
         if cols_x: self.scaler_x.fit(df[cols_x])
             
-        #if self.target_col_internal in df.columns:
-        #    target_norm = df[[self.target_col_internal]] / self.nominal_power
-        #    self.scaler_y.fit(target_norm)
 
         self._is_fitted = True
         return self
@@ -226,7 +223,7 @@ class SolarPreprocessor(BaseEstimator, TransformerMixin):
 
         df = self._calculate_physics_features(df)
         
-        if self.target_col_internal == 'k':
+        if self.target_col_internal == 'sky':
             
             # Correção de irradiação difusa com anel de sombreamento usando o modelo de Kasten
             if self.kasten == True:
@@ -253,8 +250,6 @@ class SolarPreprocessor(BaseEstimator, TransformerMixin):
         cols_x = [c for c in self.features_to_scale if c in df.columns]
         if cols_x: df[cols_x] = self.scaler_x.transform(df[cols_x])
             
-        #if self.target_col_internal in df.columns:
-        #    df[[self.target_col_internal]] = self.scaler_y.transform(df[[self.target_col_internal]])
 
         return df.fillna(0)
 
@@ -358,15 +353,6 @@ class SolarPreprocessor(BaseEstimator, TransformerMixin):
         df['k'] = df['k'].replace(np.nan, 0).fillna(0)
         df['k'] = df['k'].clip(0, 1)    
             
-        # calculo do k caso não tenha temperatura, vento e ghi
-        """
-        required = ['temp_amb', 'wind_speed', 'ghi']
-        if not all(col in df.columns for col in required):
-            if self.target_col_internal in df.columns:
-                df['k'] = df[self.target_col_internal] / self.nominal_power
-            return df
-        """
-
         # calculo das variáveis necessárias para fazer o a conversão de irrad em pot
         term_vento = self.u0 + self.u1 * df['wind_speed']
         term_vento = term_vento.replace(0, 0.1) 
@@ -375,20 +361,11 @@ class SolarPreprocessor(BaseEstimator, TransformerMixin):
         efficiency_factor = 1 - CONSTANTS['GAMMA_SI'] * (df['temp_cell'] - CONSTANTS['T_STC'])
         df['pot_cs'] = self.nominal_power * (df['ghi_cs'] / CONSTANTS['G_STC']) * efficiency_factor
         
-        # calculo do kc
-        """ solução antiga proposta pelo gemini
-        if self.target_col_internal in df.columns:
-            denom = df['pot_cs'].replace(0, np.nan)     # <------ revisar
-            df['k'] = df[self.target_col_internal] / denom
-            df['k'] = df['k'].fillna(0).clip(upper=1.2)
-        """
-
-
         return df
 
     def _create_lag_features(self, df):
         # Persistencia para potencia
-        if self.target_col_internal == 'target':
+        if self.target_col_internal == 'power':
             if 'k' in df.columns:
                 for lag in [1, 2, 3]:
                     col = f'k_lag{lag}'
@@ -399,13 +376,11 @@ class SolarPreprocessor(BaseEstimator, TransformerMixin):
                 df.drop([f'k_lag{i}' for i in [1,2,3]], axis=1, inplace=True, errors='ignore')
         
         # Persistencia para K
-        elif self.target_col_internal == 'k':
+        elif self.target_col_internal == 'sky':
             for lag in [1, 2, 3]:
                     df[f'P{lag}'] = (df['k']).shift(lag) 
         
         return df
-
-
 
     def _apply_normalizations(self, df):
         """        
@@ -433,7 +408,7 @@ class SolarPreprocessor(BaseEstimator, TransformerMixin):
             years_passed = (df['year'] - self.start_year).clip(lower=0)
             df['degradacao'] = 1 - (self.degradation_rate * years_passed)
 
-        if self.target_col_internal == 'k':
+        if self.target_col_internal == 'sky':
             df['elevation'] /= 90
 
             qs = 1 - ((np.sqrt((1 - df['kt'])**2 + df['fracao_difusa']**2))/np.sqrt(2))
@@ -722,6 +697,10 @@ class SolarPreprocessor(BaseEstimator, TransformerMixin):
         #d = d.loc[d['cond'] == 1].copy()
 
         df['mask'] = np.where(final_mask, 1.0, 0.0)
+
+        horas_validas_dia = df.groupby(df.index.date)['mask'].transform('sum')
+        # Se o dia tiver menos de 5h válidas, zera a máscara de todos os pontos daquele dia
+        df.loc[horas_validas_dia < 5.0, 'mask'] = 0.0
 
         return df
 

@@ -4,7 +4,7 @@ import pandas as pd
 import numpy as np
 
 class SolarEfficientDataset(Dataset):
-    def __init__(self, df: pd.DataFrame, feature_cols: list, target_col: str, n_past: int, n_future: int):
+    def __init__(self, df: pd.DataFrame, feature_cols: list, target_col: list, n_past: int, n_future: int):
         """
         Dataset profissional que separa explicitamente Features (X) e Target (Y).
         
@@ -24,14 +24,15 @@ class SolarEfficientDataset(Dataset):
         missing_features = [c for c in feature_cols if c not in df.columns]
         if missing_features:
             raise ValueError(f"Features faltando no DataFrame: {missing_features}")
-        if target_col not in df.columns:
-            raise ValueError(f"Target '{target_col}' não encontrado no DataFrame.")
+        for col in target_col:
+            if col not in df.columns:
+                raise ValueError(f"Target '{col}' não encontrado no DataFrame.")
 
         # Conversão para Tensor (Mantém na GPU/CPU memória apenas o necessário)
         # X: Apenas as colunas de feature
         self.data_input = torch.tensor(df[feature_cols].values, dtype=torch.float32)
         # Y: Apenas a coluna de target
-        self.data_target = torch.tensor(df[[target_col]].values, dtype=torch.float32)
+        self.data_target = torch.tensor(df[target_col].values, dtype=torch.float32)
         # Mascará -> tensor
         self.mask = torch.tensor(df['mask'].values, dtype=torch.float32)
         
@@ -48,23 +49,35 @@ class SolarEfficientDataset(Dataset):
         # Converte para numpy para velocidade
         targets = df[target_col].values
         inputs = df[feature_cols].values
+        mask = df['mask'].values
         
         # Máscaras booleanas
         not_null_target = ~np.isnan(targets)
-        no_minus_one = (targets != -1)
+        no_minus_one = (targets != -1).all(axis=1)
         not_null_input = ~np.isnan(inputs).any(axis=1)
 
         # Loop otimizado
         for i in range(self.n_past, n_total - self.n_future + 1):
             
-            # Validação do Passado (X)
+            # 1. Validação do FUTURO (Obrigatório: o alvo deve ser válido)
+            # Se n_future=1, verificamos apenas o ponto atual. 
+            # Se for maior, verificamos se há pelo menos UM ponto válido no futuro.
+            future_mask = mask[i : i + self.n_future]
+            if np.sum(future_mask) < self.n_future:
+                continue # Pula se o que queremos prever é noite ou dado ruim
+
+            # 2. Validação do PASSADO (Opcional mas recomendado)
+            # Se você não quiser treinar com "24h de zeros", pode exigir 
+            # que haja pelo menos 1h de dado válido no passado.
+            past_mask = mask[i - self.n_past : i]
+            if np.sum(past_mask) < self.n_past * 0.3:
+                continue # Pula se não houver contexto válido no passado
+
+            # 3. Verificação de NaNs (Segurança)
             if not np.all(not_null_input[i - self.n_past : i]):
                 continue 
-                
-            # Validação do Futuro (Y)
-            future_validity = not_null_target[i : i + self.n_future] & no_minus_one[i : i + self.n_future]
-            if not np.all(future_validity):
-                continue 
+            if not np.all(not_null_target[i : i + self.n_future]):
+                continue
             
             valid_starts.append(i)
             

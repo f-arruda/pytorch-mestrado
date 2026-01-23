@@ -59,11 +59,11 @@ CONFIG = {
     },
 
     # --- 4. ESTRATÉGIA DE MODELAGEM ---
-    # mode: 'clearsky_ratio' (prevê k) ou 'direct' (prevê kW normalizado)
-    'prediction_mode': 'clearsky_ratio',
+    # mode: 'sky' (prevê k) ou 'power' (prevê kW normalizado)
+    'prediction_mode': 'sky',
     
     # Qual variável o modelo vai prever? ('k' ou 'target')
-    'target_col': 'k', 
+    'target_col': ['kt', 'fracao_difusa'], 
 
     # mascara de dados noturnos
     'use_mask':True,   # True = Ignora a noite (ideal para K)
@@ -71,8 +71,8 @@ CONFIG = {
     
     # Features de entrada
     'feature_cols': [
-        'temp_amb', 'wind_speed', 'humidity',  
-        'fracao_difusa', 'irr_clearsky_ratio', 'kt'
+        'cos_zenith', 'elevation', 'delta_kt', 
+        'delta_fracao_difusa', 'QS', 'mask'
     ],
 
     # --- 5. ARQUITETURA E TREINO ---
@@ -89,7 +89,8 @@ CONFIG = {
     'use_attention': False,
     'use_feature_attention': False,
     'patience': 5,
-    'loss_function':'cpi_loss'      # "cpi_loss", "mse"
+    'loss_function':'cpi_loss',      # "cpi_loss", "mse"
+    'use_mask':True
 }
 
 OUTPUT_ROOT = 'trained_models'
@@ -152,7 +153,7 @@ def main():
         nominal_power=pp_conf['nominal_power'], 
         start_year=pp_conf['start_year'],
         features_to_scale=pp_conf['features_to_scale'],
-        target_col=CONFIG['target_col'], # <--- unica variavel que não vem do preprocessing
+        target_col=CONFIG['prediction_mode'], # <--- unica variavel que não vem do preprocessing
         column_mapping=pp_conf['column_mapping'] 
     )
     
@@ -165,41 +166,37 @@ def main():
 
     # 4. Validação de Colunas
     target_col = CONFIG['target_col']
-    if target_col not in df_processed.columns:
-        raise ValueError(f"❌ Coluna alvo '{target_col}' não encontrada! Verifique o column_mapping.")
+
+    for col in target_col:
+        if col not in df_processed.columns:
+            raise ValueError(f"❌ Coluna alvo '{target_col}' não encontrada! Verifique o column_mapping.")
 
     available_cols = [c for c in CONFIG['feature_cols'] if c in df_processed.columns]
     if len(available_cols) != len(CONFIG['feature_cols']):
         print(f"⚠️ Features ajustadas: {available_cols}")
         CONFIG['feature_cols'] = available_cols
-        save_config(CONFIG, exp_dir)
 
     # 5. Split Temporal (Último Ano = Teste)
     #last_year = df_processed.index.year.max() <---- REMOVER FUTURAMENTE
     last_year = CONFIG['test_year']
     print(f"📅 Separando ano {last_year} para TESTE.")
-    
+
     test_df = df_processed[df_processed.index.year == last_year].copy()
     dev_df = df_processed[df_processed.index.year < last_year].copy()
-    
+
     if dev_df.empty:
         raise ValueError("❌ Erro no Split: Dados insuficientes antes do último ano.")
 
     # Split Treino/Validação
     n_dev = len(dev_df)
     train_end = int(n_dev * CONFIG['split_ratios']['train'])
-    
+
     train_df = dev_df.iloc[:train_end].copy()
     val_df = dev_df.iloc[train_end:].copy()
-    
+
     print(f"📊 Divisão: Treino={len(train_df)} | Val={len(val_df)} | Teste={len(test_df)}")
 
-    # Adaptação Target (Caso o alvo não seja 'target')
-    if target_col != 'target':
-        print(f"🔄 Adaptando dataset: '{target_col}' -> 'target'")
-        train_df['target'] = train_df[target_col]
-        val_df['target'] = val_df[target_col]
-    
+
     # DataLoaders
     train_dataset = SolarEfficientDataset(
         df=train_df, 
@@ -224,7 +221,7 @@ def main():
         input_size=len(CONFIG['feature_cols']),
         hidden_sizes=CONFIG['hidden_sizes'],
         output_seq_len=CONFIG['output_seq_len'],
-        output_dim=1,
+        output_dim=len(CONFIG['target_col']),
         cell_type=CONFIG['cell_type'],
         bidirectional=CONFIG['bidirectional'],
         use_attention=CONFIG['use_attention'],
@@ -254,7 +251,7 @@ def main():
             optimizer.zero_grad()
             out = model(x)
             active_mask = mask if CONFIG['use_mask'] else None
-            loss = criterion(out, y)
+            loss = criterion(out, y, mask=active_mask)
             loss.backward()
             optimizer.step()
             batch_losses.append(loss.item())
@@ -269,7 +266,7 @@ def main():
                 x, y, mask = x.to(DEVICE), y.to(DEVICE), mask.to(DEVICE)
                 out = model(x)
                 active_mask = mask if CONFIG['use_mask'] else None
-                loss = criterion(out, y)
+                loss = criterion(out, y, mask=active_mask)
                 val_batch_losses.append(loss.item())
         
         avg_val = np.mean(val_batch_losses)
