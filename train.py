@@ -20,8 +20,10 @@ from models.encdec_model import EncDecModel
 from src.dataset_module import SolarEfficientDataset
 from src.preprocessing import SolarPreprocessor
 from utils.early_stopping import EarlyStopping
+# Loss Functions
 from loss_function.cpiloss import CPILoss
 from loss_function.mseloss import MaskedMSELoss
+from loss_function.pyloss import PhysicsGuidedLoss
 
 # ================= CONFIGURAÇÃO CENTRALIZADA =================
 CONFIG = {
@@ -75,22 +77,28 @@ CONFIG = {
         'delta_fracao_difusa', 'QS', 'mask'
     ],
 
+    'aux_col':[
+        'ghi_cs', 'cos_zenith', 
+        'elevation', 'ghi_extra'
+    ],
+
     # --- 5. ARQUITETURA E TREINO ---
-    'model_type': 'Teste_k',
-    'cell_type': 'gru',
+    'model_type': 'Teste_k_lambda_high',
+    'cell_type': 'lstm',
     'input_seq_len': 24,
     'output_seq_len': 1,
-    'hidden_sizes': [128, 64],
+    'hidden_sizes': [200],
     'learning_rate': 0.001,
     'batch_size': 32,
     'epochs': 100,
-    'dropout': 0.1,
+    'dropout': 0.2,
     'bidirectional': False,
     'use_attention': False,
     'use_feature_attention': False,
-    'patience': 5,
-    'loss_function':'cpi_loss',      # "cpi_loss", "mse"
-    'use_mask':True
+    'patience': 20,
+    'loss_function':'physics_loss',      # "cpi_loss", "mse", physics_loss
+    'lambda_hard':10,
+    'lambda_soft':10,
 }
 
 OUTPUT_ROOT = 'trained_models'
@@ -101,6 +109,13 @@ DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 def save_config(config, path):
     with open(os.path.join(path, 'config.json'), 'w') as f:
         json.dump(config, f, indent=4)
+
+def save_training_log(log_data, path="outputs/training_log.csv"):
+    df_log = pd.DataFrame(log_data)
+    # Se o arquivo não existir, cria com cabeçalho, senão anexa
+    if not os.path.exists(os.path.dirname(path)):
+        os.makedirs(os.path.dirname(path))
+    df_log.to_csv(path, index=False)
 
 # SALVA A CURVA DE TREINAMENTO
 def plot_learning_curve(train_losses, val_losses, save_path):
@@ -196,12 +211,11 @@ def main():
 
     print(f"📊 Divisão: Treino={len(train_df)} | Val={len(val_df)} | Teste={len(test_df)}")
 
-
-    # DataLoaders
     train_dataset = SolarEfficientDataset(
         df=train_df, 
         feature_cols=CONFIG['feature_cols'], 
         target_col=CONFIG['target_col'],
+        aux_col=CONFIG['aux_col'],
         n_past=CONFIG['input_seq_len'], 
         n_future=CONFIG['output_seq_len']
     )
@@ -209,6 +223,7 @@ def main():
         df=val_df, 
         feature_cols=CONFIG['feature_cols'], 
         target_col=CONFIG['target_col'],
+        aux_col=CONFIG['aux_col'],
         n_past=CONFIG['input_seq_len'], 
         n_future=CONFIG['output_seq_len']
     )
@@ -234,6 +249,11 @@ def main():
         criterion = MaskedMSELoss()
     elif CONFIG['loss_function'] == 'cpi_loss':
         criterion = CPILoss()
+    elif CONFIG['loss_function'] == 'physics_loss':
+        criterion = PhysicsGuidedLoss(
+            lambda_hard=CONFIG['lambda_hard'], 
+            lambda_soft=CONFIG['lambda_soft']
+        )
 
     optimizer = optim.Adam(model.parameters(), lr=CONFIG['learning_rate'])
     early_stopping = EarlyStopping(patience=CONFIG['patience'], verbose=True, path=os.path.join(exp_dir, 'best_model.pt'))
@@ -242,52 +262,98 @@ def main():
     print("🔥 Iniciando épocas...")
     train_losses, val_losses = [], []
     start_time = time.time()
-    
+    training_history = []
+
     for epoch in range(CONFIG['epochs']):
         model.train()
-        batch_losses = []
-        for x, y, mask in train_loader:
-            x, y, mask = x.to(DEVICE), y.to(DEVICE), mask.to(DEVICE)
+        epoch_metrics = {
+                    'epoch': epoch + 1,
+                    'mse_stat': 0, 
+                    'check_ghi':0,
+                    'check_dhi':0,
+                    'check_dni':0,
+                    'check_diffuse_fraction':0,
+                    'check_consistence':0,
+                    'check_overcast_condition':0,
+                    'check_maximum_direct_fraction':0,
+                    'check_tracker_off':0,
+                    'check_loss_physics':0,
+                    'total_loss':0,
+                }
+        
+        val_epoch_metrics = {
+            'epoch': epoch + 1,
+            'mse_stat': 0, 
+            'check_ghi':0,
+            'check_dhi':0,
+            'check_dni':0,
+            'check_diffuse_fraction':0,
+            'check_consistence':0,
+            'check_overcast_condition':0,
+            'check_maximum_direct_fraction':0,
+            'check_tracker_off':0,
+            'check_loss_physics':0,
+            'total_loss':0,
+        }
+
+        #batch_losses = []
+        for x, y, mask, aux in train_loader:
+            x, y, mask, aux = x.to(DEVICE), y.to(DEVICE), mask.to(DEVICE), aux.to(DEVICE)
             optimizer.zero_grad()
             out = model(x)
             active_mask = mask if CONFIG['use_mask'] else None
-            loss = criterion(out, y, mask=active_mask)
+            loss, loss_dict = criterion(out, y, aux, mask=active_mask)
             loss.backward()
             optimizer.step()
-            batch_losses.append(loss.item())
+            # Acumula as métricas para o log (média ponderada pelo tamanho do batch)
+            epoch_metrics['total_loss'] += loss.item() / len(train_loader)
+            for key in loss_dict:
+                epoch_metrics[key] += loss_dict[key] / len(train_loader)
+            #batch_losses.append(loss.item())
         
-        avg_train = np.mean(batch_losses)
-        train_losses.append(avg_train)
+        #avg_train = np.mean(batch_losses)
+        train_losses.append(epoch_metrics)
 
         model.eval()
-        val_batch_losses = []
+        #val_batch_losses = []
         with torch.no_grad():
-            for x, y, mask in val_loader:
-                x, y, mask = x.to(DEVICE), y.to(DEVICE), mask.to(DEVICE)
+            for x, y, mask, aux in val_loader:
+                x, y, mask, aux = x.to(DEVICE), y.to(DEVICE), mask.to(DEVICE), aux.to(DEVICE)
                 out = model(x)
                 active_mask = mask if CONFIG['use_mask'] else None
-                loss = criterion(out, y, mask=active_mask)
-                val_batch_losses.append(loss.item())
+                loss, loss_dict = criterion(out, y, aux, mask=active_mask)
+                # Acumula as métricas para o log (média ponderada pelo tamanho do batch)
+                val_epoch_metrics['total_loss'] += loss.item() / len(val_loader)
+                for key in loss_dict:
+                    val_epoch_metrics[key] += loss_dict[key] / len(val_loader)
+                #val_batch_losses.append(loss.item())
         
-        avg_val = np.mean(val_batch_losses)
-        val_losses.append(avg_val)
+        #avg_val = np.mean(val_batch_losses)
+        val_losses.append(val_epoch_metrics)
+        save_training_log(train_losses, f"outputs/{exp_name}_xai_log.csv")
         
-        print(f"Epoch {epoch+1} | Train: {avg_train:.6f} | Val: {avg_val:.6f}")
+        print(f"Epoch {epoch+1} | Train: {epoch_metrics['total_loss']:.6f} | Val: {val_epoch_metrics['total_loss']:.6f}")
         
-        early_stopping(avg_val, model)
+        early_stopping(val_epoch_metrics['total_loss'], model)
         if early_stopping.early_stop:
             print("🛑 Early stopping.")
             break
 
     # 8. Logs Finais
     if tracker: tracker.stop()
-    plot_learning_curve(train_losses, val_losses, os.path.join(exp_dir, 'learning_curve.png'))
+
+    # Extrai apenas as perdas totais para gerar o gráfico
+    train_total_only = [d['total_loss'] for d in train_losses]
+    val_total_only = [d['total_loss'] for d in val_losses]
+    plot_learning_curve(train_total_only, val_total_only, os.path.join(exp_dir, 'learning_curve.png'))
     
+    """    
     pd.DataFrame({'epoch': range(1, len(train_losses)+1), 'train': train_losses, 'val': val_losses})\
         .to_csv(os.path.join(exp_dir, 'training_log.csv'), index=False)
+    """
 
     final_metrics = {
-        "best_val_loss": min(val_losses),
+        "best_val_loss": min(val_total_only),
         "epochs": len(train_losses),
         "time_sec": time.time() - start_time,
         "model_path": os.path.join(exp_dir, 'best_model.pt'),

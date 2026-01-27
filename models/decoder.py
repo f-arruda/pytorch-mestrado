@@ -1,4 +1,5 @@
 import torch.nn as nn
+import torch
 
 # --- 2. DECODER ---
 class Decoder(nn.Module):
@@ -41,6 +42,8 @@ class Decoder(nn.Module):
             output = self.dropout(output)
             current_input = output
             
-        prediction = self.fc(current_input)
+        raw_prediction = self.fc(current_input)
+        prediction = torch.sigmoid(raw_prediction)
+
         # Retorna TENSOR
         return prediction

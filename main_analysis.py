@@ -9,8 +9,8 @@ from torch.utils.data import DataLoader
 
 # ================= CONFIGURAÇÃO =================
 EXPERIMENTS_DIRS = [
-    #"trained_models/2026-01-07_18-40-03_Teste_2",
-    "trained_models/2026-01-12_15-26-32_Teste_k",
+    "trained_models/2026-01-27_15-42-44_Teste_k",
+    "trained_models/2026-01-27_16-19-48_Teste_k_lambda_high",
 ]
 
 OUTPUT_FILE = "analysis_outputs/TABELA_COMPARATIVA_FINAL.csv"

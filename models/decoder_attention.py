@@ -64,7 +64,8 @@ class AttentionDecoder(nn.Module):
                 current_states[i] = new_state
                 decoder_input = out 
             
-            step_output = self.fc(decoder_input)
+            raw_step_output = self.fc(decoder_input)
+            step_output = torch.sigmoid(raw_step_output)
             outputs.append(step_output)
             
         return torch.cat(outputs, dim=1)

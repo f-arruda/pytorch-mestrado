@@ -4,7 +4,9 @@ import pandas as pd
 import numpy as np
 
 class SolarEfficientDataset(Dataset):
-    def __init__(self, df: pd.DataFrame, feature_cols: list, target_col: list, n_past: int, n_future: int):
+    def __init__(self, df: pd.DataFrame, feature_cols: list, 
+                 target_col: list, aux_col:list,
+                 n_past: int, n_future: int):
         """
         Dataset profissional que separa explicitamente Features (X) e Target (Y).
         
@@ -19,6 +21,7 @@ class SolarEfficientDataset(Dataset):
         self.n_future = n_future
         self.feature_cols = feature_cols
         self.target_col = target_col
+        self.aux_col = aux_col
         
         # Validação básica
         missing_features = [c for c in feature_cols if c not in df.columns]
@@ -35,6 +38,8 @@ class SolarEfficientDataset(Dataset):
         self.data_target = torch.tensor(df[target_col].values, dtype=torch.float32)
         # Mascará -> tensor
         self.mask = torch.tensor(df['mask'].values, dtype=torch.float32)
+        # Aux -> tensor
+        self.data_aux = torch.tensor(df[aux_col].values, dtype=torch.float32)
         
         self.timestamps = df.index
         
@@ -97,5 +102,7 @@ class SolarEfficientDataset(Dataset):
 
         # Mask: mascara de dia e noite
         mask = self.mask[real_idx : real_idx + self.n_future]
+
+        aux_future = self.data_aux[real_idx: real_idx + self.n_future]
         
-        return x, y, mask
+        return x, y, mask, aux_future
