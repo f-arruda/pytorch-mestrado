@@ -1,12 +1,20 @@
 import torch
 import torch.nn as nn
+from loss_function.cpiloss import CPILoss
+import numpy as np
 
 class PhysicsGuidedLoss(nn.Module):
-    def __init__(self, lambda_hard=0.1, lambda_soft=0.1):
+    def __init__(self, lambda_hard=0.1, lambda_soft=0.1, data_loss_type='mse'):
         super(PhysicsGuidedLoss, self).__init__()
-        self.mse = nn.MSELoss(reduction='none')
         self.lambda_hard = lambda_hard
         self.lambda_soft = lambda_soft
+        self.data_loss_type = data_loss_type
+        
+        if self.data_loss_type == 'cpi':
+            self.data_loss_fn = CPILoss()
+
+        elif self.data_loss_type == 'mse':
+            self.data_loss_fn = nn.MSELoss(reduction='none')
 
     def forward(self, output, target, 
                 aux_future, mask=None):
@@ -17,22 +25,32 @@ class PhysicsGuidedLoss(nn.Module):
         pred_kt = output[:, :, 0]
         pred_kd = output[:, :, 1]
 
-        # --- 1. Erro de Dados (MSE com Máscara) ---
-        mse_loss = self.mse(output, target)
-        if mask is not None:
-            # Garante que a máscara [B, S, 1] seja aplicada corretamente em [B, S, 2]
-            mse_loss = (mse_loss * mask).sum() / (mask.sum() * 2 + 1e-8)
-        else:
-            mse_loss = mse_loss.mean()
+        original_kt = target[:, :, 0]
+        original_kd = target[:, :, 1]
 
+        eps = 1e-8
+
+        # --- 1. Erro de Dados (MSE com Máscara) ---
+        if self.data_loss_type == 'mse':
+            mse_raw = self.data_loss_fn(output, target)
+            if mask is not None:
+                data_loss = (mse_raw * mask).sum() / (mask.sum() * output.size(-1) + eps)
+            else:
+                data_loss = mse_raw.mean()
+        elif self.data_loss_type == 'cpi':
+            loss_kt = self.data_loss_fn(pred_kt, original_kt, mask)
+            loss_kd = self.data_loss_fn(pred_kd, original_kd, mask)
+            #data_loss = (loss_kt + loss_kd) / 2
+            data_loss = torch.sqrt(loss_kt**2 + loss_kd**2)
+        
         #=============================
         #   --- Quality Control ---
         #=============================
-        eps = 1e-8
+        
 
         ghi_cs = aux_future[:, :, 0]
         cos_zenith = aux_future[:, :, 1]
-        elevation = aux_future[:, :, 2]
+        elevation = aux_future[:, :, 2] * 90
         ghi_extra = aux_future[:, :, 3]
 
         sin_alpha = torch.sin(torch.deg2rad(elevation))
@@ -65,7 +83,7 @@ class PhysicsGuidedLoss(nn.Module):
         closure_ratio = torch.abs((ghi - sum_components) / (ghi + eps))
         limit_val = torch.where(elevation > 15, torch.tensor(0.08, device=device), torch.tensor(0.15, device=device))
         
-        components = torch.relu(sum_components-50)
+        components = torch.relu(50 - sum_components)
         closure = torch.relu(closure_ratio - limit_val)
 
         err_consistence_check = (components + closure)
@@ -88,7 +106,7 @@ class PhysicsGuidedLoss(nn.Module):
         term_const = -1 + (1.05 / 0.95)
         lhs_9 = ((dni * sin_alpha) / (ghi + eps))
         rhs_9 = ((ghi / ghi_cs) + term_const)
-        err_diffuse_consistency = (torch.relu(rhs_9 - lhs_9))
+        err_diffuse_consistency = (torch.relu(lhs_9 - rhs_9))
         # Critério de Rejeição 
         check_ghi_6 = ghi / (ghi_cs + eps)
         check_dhi_6 = dhi / (ghi + eps)
@@ -108,13 +126,13 @@ class PhysicsGuidedLoss(nn.Module):
         
         # --- Loss Function ---
         # L_function = L_data + Lambda_1 * hard_limits + Lambda_2 * soft_limits
-        loss_function = mse_loss + (self.lambda_hard * loss_hard_limits) + (self.lambda_soft * loss_soft_limits)
+        loss_function = data_loss + (self.lambda_hard * loss_hard_limits) + (self.lambda_soft * loss_soft_limits)
         
         #===============================================
         #   --- Salvando informações para logging --- 
         #===============================================
         loss_dict = {
-            'mse_stat': mse_loss.detach().item(),
+            'mse_stat': data_loss.detach().item(),
             'check_ghi': loss_ghi_limits.detach().item(),
             'check_dhi': loss_dhi_limits.detach().item(),
             'check_dni': loss_dni_limits.detach().item(),

@@ -237,13 +237,16 @@ class SolarPreprocessor(BaseEstimator, TransformerMixin):
             # adiciona controle de qualidade
             df = self._quality_control(df)  
 
+            # persistencia
+            df = self._persistence(df)
+
         
         df = self._create_lag_features(df)
         
         
         df = self._apply_normalizations(df)
 
-        if self.target_col_internal == "target":
+        if self.target_col_internal == "power":
             # Define o limiar (ex: 85 graus). 1 = Dia (Considerar), 0 = Noite (Ignorar)
             df['mask'] = np.where(df['zenith'] < 85, 1.0, 0.0)
         
@@ -259,6 +262,11 @@ class SolarPreprocessor(BaseEstimator, TransformerMixin):
         df = df.loc[df['__ano_temp'] >= self.start_year].copy()
         df.drop(columns=['__ano_temp'], inplace=True)
         return df.sort_index()
+    
+    def _persistence(self, df):
+        df['P_fracao_difusa'] = df['fracao_difusa'].shift(periods=1)
+        df['P_kt'] = df['kt'].shift(periods=1)
+        return df
 
     def _calculate_solar_position(self, df):
         solpos = self.location.get_solarposition(df.index)
@@ -338,7 +346,6 @@ class SolarPreprocessor(BaseEstimator, TransformerMixin):
         elif 'dni' in df.columns and 'ghi' in df.columns:
             df['dhi'] = df['ghi'] - (df['dni']*df['cos_zenith'])
 
-
         # 1. Fração Difusa (Prioridade: Medido > Teórico)
         if 'dhi' in df.columns and 'ghi' in df.columns:
             #df['fracao_difusa'] = df['dhi']/df['ghi'].clip(0, 1.2)
@@ -351,7 +358,29 @@ class SolarPreprocessor(BaseEstimator, TransformerMixin):
 
         df['k'] = df['ghi']/df['ghi_cs']
         df['k'] = df['k'].replace(np.nan, 0).fillna(0)
-        df['k'] = df['k'].clip(0, 1)    
+        df['k'] = df['k'].clip(0, 1)  
+
+        #===================================
+        #   --- Calculo da variancia ---
+        # Castillejo-Cuberos et al. (2024)
+        #===================================
+        sin_alpha = np.sin(np.deg2rad(df['elevation']))
+
+        qs = 1 - ((np.sqrt((1 - df['kt'])**2 + df['fracao_difusa']**2))/np.sqrt(2))
+        df['QS'] = qs 
+
+        x1=0.8505
+        x2=0.3985
+        x3=1.2972
+        x4=0.9084
+        x5=0.3066
+
+        first_part = (x1 - ((df['kt'] - 0.5) ** 2 + (df['fracao_difusa'] - 0.6) ** 2)/x2) * (sin_alpha) ** x3
+        second_part = (1 - (np.abs(qs-x4)/x4)) ** x5
+
+        vs_cdfn = first_part * second_part
+        df['VS_cdfn'] = vs_cdfn
+
             
         # calculo das variáveis necessárias para fazer o a conversão de irrad em pot
         term_vento = self.u0 + self.u1 * df['wind_speed']
@@ -410,9 +439,6 @@ class SolarPreprocessor(BaseEstimator, TransformerMixin):
 
         if self.target_col_internal == 'sky':
             df['elevation'] /= 90
-
-            qs = 1 - ((np.sqrt((1 - df['kt'])**2 + df['fracao_difusa']**2))/np.sqrt(2))
-            df['QS'] = qs 
 
             for i in ['kt', 'fracao_difusa']:
                 # 1. Calcula a diferença simples dos valores

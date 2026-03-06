@@ -62,19 +62,24 @@ CONFIG = {
 
     # --- 4. ESTRATÉGIA DE MODELAGEM ---
     # mode: 'sky' (prevê k) ou 'power' (prevê kW normalizado)
-    'prediction_mode': 'sky',
+    'prediction_mode': 'power',
     
-    # Qual variável o modelo vai prever? ('k' ou 'target')
-    'target_col': ['kt', 'fracao_difusa'], 
+    # Qual variável o modelo vai prever? ('kt', 'fracao_difusa' ou 'target')
+    'target_col': ['target'], 
 
     # mascara de dados noturnos
-    'use_mask':True,   # True = Ignora a noite (ideal para K)
+    'use_mask':False,   # True = Ignora a noite (ideal para K)
                         # False = Aprende a noite (ideal para Potência)
     
     # Features de entrada
     'feature_cols': [
-        'cos_zenith', 'elevation', 'delta_kt', 
-        'delta_fracao_difusa', 'QS', 'mask'
+        'cos_zenith', 'sin_azimuth', 'target',
+        'wind_speed', 'temp_amb', 'humidity'
+        #'elevation', 'delta_kt', 
+        #'delta_fracao_difusa', 'QS', 'wind_speed',
+        #'temp_amb', 'humidity'
+        #'kt', 'fracao_difusa'
+        
     ],
 
     'aux_col':[
@@ -83,20 +88,21 @@ CONFIG = {
     ],
 
     # --- 5. ARQUITETURA E TREINO ---
-    'model_type': 'Teste_k_lambda_high',
+    'model_type': 'LSTM_PAZVTU',
     'cell_type': 'lstm',
     'input_seq_len': 24,
     'output_seq_len': 1,
-    'hidden_sizes': [200],
+    'hidden_sizes': [300],
     'learning_rate': 0.001,
     'batch_size': 32,
-    'epochs': 100,
+    'epochs': 10000,
     'dropout': 0.2,
     'bidirectional': False,
     'use_attention': False,
     'use_feature_attention': False,
-    'patience': 20,
-    'loss_function':'physics_loss',      # "cpi_loss", "mse", physics_loss
+    'patience': 100,
+    'loss_function':'mse',      # "cpi_loss", "mse", physics_loss
+    'physics_base_loss': 'cpi',
     'lambda_hard':10,
     'lambda_soft':10,
 }
@@ -169,7 +175,9 @@ def main():
         start_year=pp_conf['start_year'],
         features_to_scale=pp_conf['features_to_scale'],
         target_col=CONFIG['prediction_mode'], # <--- unica variavel que não vem do preprocessing
-        column_mapping=pp_conf['column_mapping'] 
+        column_mapping=pp_conf['column_mapping'],
+        cs_model = 'esra',
+        kasten_corr=True
     )
     
     preprocessor.fit(df)
@@ -252,7 +260,8 @@ def main():
     elif CONFIG['loss_function'] == 'physics_loss':
         criterion = PhysicsGuidedLoss(
             lambda_hard=CONFIG['lambda_hard'], 
-            lambda_soft=CONFIG['lambda_soft']
+            lambda_soft=CONFIG['lambda_soft'],
+            data_loss_type=CONFIG['physics_base_loss']
         )
 
     optimizer = optim.Adam(model.parameters(), lr=CONFIG['learning_rate'])
@@ -302,13 +311,20 @@ def main():
             optimizer.zero_grad()
             out = model(x)
             active_mask = mask if CONFIG['use_mask'] else None
-            loss, loss_dict = criterion(out, y, aux, mask=active_mask)
-            loss.backward()
+            if CONFIG['prediction_mode'] == 'sky':
+                loss, loss_dict = criterion(out, y, aux, mask=active_mask)
+                loss.backward()
+                for key in loss_dict:
+                    epoch_metrics[key] += loss_dict[key] / len(train_loader)
+
+            elif CONFIG['prediction_mode'] == 'power':
+                loss = criterion(out, y, mask=active_mask)
+                loss.backward()
+
             optimizer.step()
             # Acumula as métricas para o log (média ponderada pelo tamanho do batch)
             epoch_metrics['total_loss'] += loss.item() / len(train_loader)
-            for key in loss_dict:
-                epoch_metrics[key] += loss_dict[key] / len(train_loader)
+
             #batch_losses.append(loss.item())
         
         #avg_train = np.mean(batch_losses)
@@ -321,16 +337,20 @@ def main():
                 x, y, mask, aux = x.to(DEVICE), y.to(DEVICE), mask.to(DEVICE), aux.to(DEVICE)
                 out = model(x)
                 active_mask = mask if CONFIG['use_mask'] else None
-                loss, loss_dict = criterion(out, y, aux, mask=active_mask)
-                # Acumula as métricas para o log (média ponderada pelo tamanho do batch)
+
+                if CONFIG['prediction_mode'] == 'sky':
+                    loss, loss_dict = criterion(out, y, aux, mask=active_mask)
+                    # Acumula as métricas para o log (média ponderada pelo tamanho do batch)
+                    for key in loss_dict:
+                        val_epoch_metrics[key] += loss_dict[key] / len(val_loader)
+
+                if CONFIG['prediction_mode'] == 'power':
+                    loss = criterion(out, y, mask=active_mask)
+
                 val_epoch_metrics['total_loss'] += loss.item() / len(val_loader)
-                for key in loss_dict:
-                    val_epoch_metrics[key] += loss_dict[key] / len(val_loader)
-                #val_batch_losses.append(loss.item())
-        
         #avg_val = np.mean(val_batch_losses)
         val_losses.append(val_epoch_metrics)
-        save_training_log(train_losses, f"outputs/{exp_name}_xai_log.csv")
+        save_training_log(train_losses, os.path.join(exp_dir, 'log_xai.csv'))
         
         print(f"Epoch {epoch+1} | Train: {epoch_metrics['total_loss']:.6f} | Val: {val_epoch_metrics['total_loss']:.6f}")
         
