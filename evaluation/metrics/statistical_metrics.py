@@ -129,18 +129,31 @@ class SolarStatisticalAnalyzer:
         ref_model = self.df_day['Modelo'].iloc[0]
         df_ref = self.df_day[self.df_day['Modelo'] == ref_model]
         
+        # Otimização: agrupa os dados fora do loop para evitar varreduras O(N) repetidas
+        grouped_ref = df_ref.groupby('Hour', sort=False)
+        grouped_day = self.df_day.groupby(['Hour', 'Modelo'], sort=False)
+
         curr = 1
         for h in hours:
             if curr != 1: curr += 1 # Espaçamento entre horas
             for m in all_series:
                 if m == 'Observado':
-                    vals = df_ref[df_ref['Hour'] == h]['Observado']
+                    try:
+                        vals = grouped_ref.get_group(h)['Observado']
+                    except KeyError:
+                        vals = df_ref.iloc[:0].copy()['Observado']
                     c = 'black'
                 elif m == 'Persistencia':
-                    vals = df_ref[df_ref['Hour'] == h]['Persistencia']
+                    try:
+                        vals = grouped_ref.get_group(h)['Persistencia']
+                    except KeyError:
+                        vals = df_ref.iloc[:0].copy()['Persistencia']
                     c = 'gray'
                 else:
-                    vals = self.df_day[(self.df_day['Hour'] == h) & (self.df_day['Modelo'] == m)]['Previsto']
+                    try:
+                        vals = grouped_day.get_group((h, m))['Previsto']
+                    except KeyError:
+                        vals = self.df_day.iloc[:0].copy()['Previsto']
                     # Usa cor do dicionário ou gera
                     style = self._get_style(m)
                     c = style.get('FaceColor', 'blue')
