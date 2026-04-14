@@ -1,0 +1,125 @@
+import torch
+from torch.utils.data import Dataset
+import pandas as pd
+import numpy as np
+
+class SolarEfficientDataset(Dataset):
+    def __init__(self, df: pd.DataFrame, feature_cols: list, 
+                 target_col: list, aux_col:list,
+                 n_past: int, n_future: int,
+                 cloud_enhancement: bool = False,
+                 group_col: str = None):
+        """
+        Dataset profissional que separa explicitamente Features (X) e Target (Y).
+        
+        Args:
+            df: DataFrame com índice datetime contínuo.
+            feature_cols: Lista com os nomes das colunas de entrada (X).
+            target_col: Nome da coluna alvo (Y).
+            n_past: Tamanho da janela do passado.
+            n_future: Tamanho da janela do futuro.
+        """
+        self.n_past = n_past
+        self.n_future = n_future
+        self.feature_cols = feature_cols
+        self.target_col = target_col
+        self.aux_col = aux_col
+        
+        # Validação básica
+        missing_features = [c for c in feature_cols if c not in df.columns]
+        if missing_features:
+            raise ValueError(f"Features faltando no DataFrame: {missing_features}")
+        for col in target_col:
+            if col not in df.columns:
+                raise ValueError(f"Target '{col}' não encontrado no DataFrame.")
+
+        # Conversão para Tensor (Mantém na GPU/CPU memória apenas o necessário)
+        # X: Apenas as colunas de feature
+        self.data_input = torch.tensor(df[feature_cols].values, dtype=torch.float32)
+        # Y: Apenas a coluna de target
+        self.data_target = torch.tensor(df[target_col].values, dtype=torch.float32)
+        # Mascará -> tensor
+        self.mask = torch.tensor(df['mask'].values, dtype=torch.float32)
+        # Aux -> tensor
+        self.data_aux = torch.tensor(df[aux_col].values, dtype=torch.float32)
+        
+        self.timestamps = df.index
+
+        if group_col is not None:
+            self.groups = torch.tensor(df[group_col].values, dtype=torch.int32)
+        else: self.groups = group_col
+        
+        # Precomputação de índices (Lógica vetorizada mantida)
+        self.valid_indices = self._precompute_valid_indices(df, feature_cols, target_col, cloud_enhancement)
+        print(f"✅ Dataset pronto. Amostras válidas: {len(self.valid_indices)}")
+
+    def _precompute_valid_indices(self, df, feature_cols, target_col, cloud_enhancement):
+        valid_starts = []
+        n_total = len(df)
+        
+        # Converte para numpy para velocidade
+        targets = df[target_col].values
+        inputs = df[feature_cols].values
+        mask = df['mask'].values
+
+        if cloud_enhancement == True: cloud = df['cloud_enh'].values
+        
+        # Máscaras booleanas
+        not_null_target = ~np.isnan(targets)
+        no_minus_one = (targets != -1).all(axis=1)
+        not_null_input = ~np.isnan(inputs).any(axis=1)
+
+        # Loop otimizado
+        for i in range(self.n_past, n_total - self.n_future + 1):
+            
+            # 1. Validação do FUTURO (Obrigatório: o alvo deve ser válido)
+            # Se n_future=1, verificamos apenas o ponto atual. 
+            # Se for maior, verificamos se há pelo menos UM ponto válido no futuro.
+            future_mask = mask[i : i + self.n_future]
+            if np.sum(future_mask) < self.n_future:
+                continue # Pula se o que queremos prever é noite ou dado ruim
+
+            if cloud_enhancement == True: 
+                cloud_mask = mask[i : i + self.n_future]
+                if np.sum(cloud_mask) > self.n_future:
+                    continue # Pula se o que queremos prever é noite ou dado ruim
+
+            # 2. Validação do PASSADO (Opcional mas recomendado)
+            # Se você não quiser treinar com "24h de zeros", pode exigir 
+            # que haja pelo menos 1h de dado válido no passado.
+            past_mask = mask[i - self.n_past : i]
+            if np.sum(past_mask) < self.n_past * 0.3:
+                continue # Pula se não houver contexto válido no passado
+
+            # 3. Verificação de NaNs (Segurança)
+            if not np.all(not_null_input[i - self.n_past : i]):
+                continue 
+            if not np.all(not_null_target[i : i + self.n_future]):
+                continue
+            
+            valid_starts.append(i)
+            
+        return valid_starts
+
+    def __len__(self):
+        return len(self.valid_indices)
+
+    def __getitem__(self, idx):
+        real_idx = self.valid_indices[idx]
+        
+        # X: Features do passado
+        x = self.data_input[real_idx - self.n_past : real_idx]
+        
+        # Y: Target do futuro
+        y = self.data_target[real_idx : real_idx + self.n_future]
+
+        # Mask: mascara de dia e noite
+        mask = self.mask[real_idx : real_idx + self.n_future]
+
+        aux_future = self.data_aux[real_idx: real_idx + self.n_future]
+        
+        if self.groups is not None:
+            group = self.groups[real_idx]
+            return x, y, mask, aux_future, group
+        
+        else: return x, y, mask, aux_future

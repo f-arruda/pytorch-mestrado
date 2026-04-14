@@ -1,0 +1,55 @@
+csv_path: data/pv0.csv
+split_ratios:
+  train: 0.8
+  val: 0.2
+test_year: 2022
+preprocessing:
+  latitude: -23.56
+  longitude: -46.73
+  altitude: 0
+  timezone: Etc/GMT+3
+  nominal_power: 156.0
+  start_year: 2018
+  features_to_scale:
+    - temp_amb
+    - wind_speed
+  column_mapping:
+    Pot_BT: target
+    Irradiação Global horária(horizontal) kWh/m2: ghi
+    Irradiação Difusa horária kWh/m2: dhi
+    Irradiação Global horária(Inclinada 27°) kWh/m2: irrad_poa
+    Temperatura ambiente °C: temp_amb
+    Umidade Relativa %: humidity
+    Velocidade média do vento m/s: wind_speed
+prediction_mode: power
+target_col:
+  - target
+use_mask: True
+feature_cols:
+  - target
+  - wind_speed
+  - temp_amb
+  - humidity
+aux_col:
+  - ghi_cs
+  - cos_zenith
+  - elevation
+  - ghi_extra
+model_type: potencia_lstm
+cell_type: lstm
+input_seq_len: 24
+output_seq_len: 1
+hidden_sizes:
+  - 128
+learning_rate: 0.001
+batch_size: 32
+epochs: 100
+dropout: 0.2
+bidirectional: False
+use_attention: False
+use_feature_attention: False
+patience: 10
+loss_function: cpi_loss
+physics_base_loss: mse
+lambda_hard: 0
+lambda_soft: 0

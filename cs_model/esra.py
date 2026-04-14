@@ -207,8 +207,8 @@ class ESRA:
             raise ValueError("O índice deve ser DatetimeIndex.")
 
         # Prepara dados auxiliares
-        sza_ref = self.apparent_zenith.reindex(df_measured.index).fillna(method='ffill')
-        dni_extra_ref = self.dni_extra.reindex(df_measured.index).fillna(method='ffill')
+        sza_ref = self.apparent_zenith.reindex(df_measured.index).ffill()
+        dni_extra_ref = self.dni_extra.reindex(df_measured.index).ffill()
         
         # --- SELEÇÃO DE DIAS ---
         days_to_optimize = []

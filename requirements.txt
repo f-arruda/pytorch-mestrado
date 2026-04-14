@@ -7,3 +7,6 @@ SkillMetrics
 pvlib
 scipy
 optuna
+pyyaml
+mlflow
+pytorch-lightning
