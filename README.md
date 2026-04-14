@@ -10,11 +10,11 @@ A arquitetura do projeto separa o pré-processamento físico rigoroso dos dados 
 
 O repositório é composto pelas seguintes pastas e arquivos descritos no fluxograma de uso geral:
 
-- **`train.py` / `train_optimization.py`** : Scripts principais de execução. Instanciam classes, invocam o pré-processamento, carregam o PyTorch Loader e gerenciam as epochs de testes do modelo.
-- **`src/`** : Lógica principal para processar os dados metereológicos (`preprocessing.py`), carregar os dados em tensores do PyTorch (`dataset_module.py`) e tirar métricas estatísticas de avaliação (`statistical_metrics.py`).
-- **`models/`** : Implementações dos módulos neurais (Encoder, Decoder, Attention, etc) que são agregados na classe `EncDecModel`.
-- **`utils/`** : Ferramentas acessórias de treino (Ex: `EarlyStopping`).
-- **`loss_function/`** : Funções de custo customizadas para os modelos preditivos, como erro médio quadrático mascarado e funções guiadas por física.
+- **`run_ceu.py` / `run_potencia.py`** : Scripts principais de execução. Carregam as configurações (YAML), instanciam classes de domínio e invocam o treinamento principal.
+- **`core/`** : Lógica principal compartilhada, incluindo `train.py` (execução principal), `models/` (implementações dos módulos neurais agregados na classe `EncDecModel`), `utils/` (ferramentas acessórias como `EarlyStopping`), e `loss_function/` (funções de custo customizadas guiadas por física).
+- **`domains/`** : Contém domínios específicos (ex: `previsao_ceu`, `previsao_potencia`), cada um com seu respectivo `preprocessing.py` (processamento de dados metereológicos) e `dataset.py` (carregamento de dados em tensores PyTorch).
+- **`evaluation/`** : Lógica de avaliação e métricas, como a obtenção de métricas estatísticas em `evaluation/metrics/statistical_metrics.py`.
+- **`configs/`** : Arquivos de configuração em YAML que ditam as hiperparametrizações, features mapeadas, configurações de pré-processamento e rede.
 
 ---
 
@@ -22,7 +22,7 @@ O repositório é composto pelas seguintes pastas e arquivos descritos no fluxog
 
 Abaixo segue um levantamento das classes mais importantes desenvolvidas na base de código, acompanhados de seus respectivos atributos/argumentos necessários para instanciação ou uso.
 
-### 1. `SolarPreprocessor` (em `src/preprocessing.py`)
+### 1. `SolarPreprocessor` (em `domains/<dominio>/preprocessing.py`)
 
 Esta é a classe fundamental para limpar e tratar os dados crus, processar e calcular atributos físicos baseados em posição solar, modelos de céu claro e normalização de features. Esta classe estende `BaseEstimator` e `TransformerMixin` facilitando usabilidade igual ao `scikit-learn`.
 
@@ -44,7 +44,7 @@ Esta é a classe fundamental para limpar e tratar os dados crus, processar e cal
 **Funções principais:** `fit(X, y)` (ajuste e otimização dos parâmetros de U0/U1 caso solicitado), `transform(X)` (cálculo iterativo do zenit, azimuth, ESRA turbidez, K factors, limites físicos etc.).
 
 
-### 2. `SolarEfficientDataset` (em `src/dataset_module.py`)
+### 2. `SolarEfficientDataset` (em `domains/<dominio>/dataset.py`)
 
 Dataset do PyTorch com responsabilidade de alinhar janelas passadas e futuras, remover horários desnecessários (noites absolutas baseadas em mask ou cloud_enhancement), tratar NaNs e transformar dados tabulares numéricos em tensores.
 
@@ -60,7 +60,7 @@ Dataset do PyTorch com responsabilidade de alinhar janelas passadas e futuras, r
 | `group_col` | `str` (default=None) - Opcional. Representa os tensores agrupadores, comumente retornados no método `__getitem__`. |
 
 
-### 3. `EncDecModel` (em `models/encdec_model.py`)
+### 3. `EncDecModel` (em `core/models/encdec_model.py`)
 
 Construtor macro da Rede Neural, une blocos arquiteturais do Encoder e do Decoder, com possíveis injeções de mecanismos de atenção temporal e atenção em features.
 
@@ -77,7 +77,7 @@ Construtor macro da Rede Neural, une blocos arquiteturais do Encoder e do Decode
 | `use_feature_attention`| `bool` (default=False) - Modifica o encoder para empregar análise focada em prever pesos nas colunas específicas no instante passado. |
 
 
-### 4. `EarlyStopping` (em `utils/early_stopping.py`)
+### 4. `EarlyStopping` (em `core/utils/early_stopping.py`)
 
 Utilitário essencial para impedir o sobreajuste (overfitting) travando o modelo no melhor estado obtido no decorrer das `epochs`.
 
@@ -89,7 +89,7 @@ Utilitário essencial para impedir o sobreajuste (overfitting) travando o modelo
 | `path` | `str` (default='checkpoint.pt') - Caminhos absolutos/relativos onde armazeamos fisicamente local com salvamento dos pesos do melhor *state_dict* do PyTorch. |
 
 
-### 5. `SolarStatisticalAnalyzer` (em `src/statistical_metrics.py`)
+### 5. `SolarStatisticalAnalyzer` (em `evaluation/metrics/statistical_metrics.py`)
 
 Automatiza o plotting comparativo (Diagrama de Taylor, Scatter Plots e Histogramas, perfis diurnos de medições de RMS/MAE) em cima das inferências resultadas do modelo vs Observação + Baseline de persistência clássica de meteorologia.
 
@@ -102,4 +102,4 @@ Automatiza o plotting comparativo (Diagrama de Taylor, Scatter Plots e Histogram
 
 ## Estratégias e Scripts
 
-- A raiz principal usa e abusa de configuração unificada em Dicionário. No `train.py`, o mapa mental principal chama a instância unificada sobre a variável chamada **`CONFIG`**. Isso orienta `preprocessor` de *from* -> *to* nos nomes na base de dados sem chumbá-las no script em si e permitindo focar os targets `KT` em sky vs potencia elétricas diretas.
+- A arquitetura utiliza arquivos de configuração YAML unificados dentro da pasta `configs/` (ex: `ceu_config.yaml` e `potencia_config.yaml`). Os scripts de entrada (`run_ceu.py` e `run_potencia.py`) carregam essas configurações e as repassam para a função principal de treinamento (`core/train.py`). Isso orienta o `preprocessor` de *from* -> *to* nos nomes na base de dados sem chumbá-las no script em si e permite definir facilmente os hiperparâmetros e os targets `kt` em céu vs potência elétrica direta.
