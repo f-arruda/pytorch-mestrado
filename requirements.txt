@@ -10,3 +10,4 @@ optuna
 pyyaml
 mlflow
 pytorch-lightning
+statsmodels
