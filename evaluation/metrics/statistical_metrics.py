@@ -30,6 +30,10 @@ class SolarStatisticalAnalyzer:
         # Se quiser ajustar, mude aqui.
         self.df_day = self.df[(self.df['Hour'] >= 6) & (self.df['Hour'] <= 18)].copy()
 
+        # Otimização de Performance: Cache dos nomes únicos dos modelos para evitar O(N) full-column scans
+        # repetidos durante loops e visualizações
+        self.unique_models = self.df_day['Modelo'].unique() if not self.df_day.empty and 'Modelo' in self.df_day.columns else np.array([])
+
         # ================= ESTILOS ORIGINAIS =================
         self.markers_dict = {
             'Observado': {'Symbol': 'h', 'Size': 12, 'FaceColor': 'black', 'EdgeColor': 'black', 'style': '-'},
@@ -67,9 +71,19 @@ class SolarStatisticalAnalyzer:
     def save_global_metrics(self):
         metrics = []
         
+        if self.df_day.empty:
+            return
+
+        # Otimização: agrupa os dados fora do loop para evitar O(N) masks
+        grouped_day = self.df_day.groupby('Modelo', sort=False)
+
         # 1. Métricas dos Modelos
-        for m in self.df_day['Modelo'].unique():
-            sub = self.df_day[self.df_day['Modelo'] == m]
+        for m in self.unique_models:
+            try:
+                sub = grouped_day.get_group(m)
+            except KeyError:
+                continue
+
             if sub.empty: continue
             
             obs, pred = sub['Observado'], sub['Previsto']
@@ -94,9 +108,12 @@ class SolarStatisticalAnalyzer:
             })
             
         # 2. Métricas da Persistência (Referência)
-        if not self.df_day.empty:
+        if len(self.unique_models) > 0:
             # Pega qualquer slice para calcular a persistência global
-            sub = self.df_day.iloc[:len(self.df_day)//len(self.df_day['Modelo'].unique())]
+            try:
+                sub = grouped_day.get_group(self.unique_models[0])
+            except KeyError:
+                sub = self.df_day.iloc[:len(self.df_day)//len(self.unique_models)]
             
             rmse_p = np.sqrt(mean_squared_error(sub['Observado'], sub['Persistencia']))
             mae_p = mean_absolute_error(sub['Observado'], sub['Persistencia'])
@@ -119,15 +136,23 @@ class SolarStatisticalAnalyzer:
     def plot_boxplots_hourly(self):
         """Boxplots manuais com estilo customizado."""
         hours = sorted(self.df_day['Hour'].unique())
-        models = sorted(self.df_day['Modelo'].unique())
+        models = sorted(self.unique_models)
         all_series = ['Observado', 'Persistencia'] + models
         
         fig, ax = plt.subplots(figsize=(16, 8))
         data, pos, colors = [], [], []
         
         # Para evitar duplicidade no Observado/Persistencia, pegamos de um modelo de referência
-        ref_model = self.df_day['Modelo'].iloc[0]
-        df_ref = self.df_day[self.df_day['Modelo'] == ref_model]
+        if len(self.unique_models) > 0:
+            ref_model = self.unique_models[0]
+            # Usando groupby para O(1) fetch em vez de varredura O(N)
+            grouped_day = self.df_day.groupby('Modelo', sort=False)
+            try:
+                df_ref = grouped_day.get_group(ref_model)
+            except KeyError:
+                df_ref = self.df_day.iloc[:0].copy()
+        else:
+            df_ref = self.df_day.iloc[:0].copy()
         
         # Otimização: agrupa os dados fora do loop para evitar varreduras O(N) repetidas
         grouped_ref = df_ref.groupby('Hour', sort=False)
@@ -192,8 +217,15 @@ class SolarStatisticalAnalyzer:
         grouped['RMSE'] = np.sqrt(grouped['SE'])
         
         # Persistência
-        ref_model = self.df_day['Modelo'].iloc[0]
-        df_ref = self.df_day[self.df_day['Modelo'] == ref_model].copy()
+        if len(self.unique_models) > 0:
+            ref_model = self.unique_models[0]
+            grouped_day = self.df_day.groupby('Modelo', sort=False)
+            try:
+                df_ref = grouped_day.get_group(ref_model).copy()
+            except KeyError:
+                df_ref = self.df_day.iloc[:0].copy()
+        else:
+            df_ref = self.df_day.iloc[:0].copy()
         df_ref['SE_Pers'] = (df_ref['Observado'] - df_ref['Persistencia']) ** 2
         grouped_p = df_ref.groupby('Hour')['SE_Pers'].mean().reset_index()
         grouped_p['RMSE'] = np.sqrt(grouped_p['SE_Pers'])
@@ -201,8 +233,13 @@ class SolarStatisticalAnalyzer:
         fig, ax = plt.subplots(figsize=(12, 6))
         
         # Plot Modelos
-        for m in grouped['Modelo'].unique():
-            sub = grouped[grouped['Modelo'] == m]
+        grouped_by_model = grouped.groupby('Modelo', sort=False)
+        grouped_models = grouped['Modelo'].unique()
+        for m in grouped_models:
+            try:
+                sub = grouped_by_model.get_group(m)
+            except KeyError:
+                continue
             style = self._get_style(m)
             ax.plot(sub['Hour'], sub['RMSE'], label=m, 
                     color=style['EdgeColor'], marker=style['Symbol'], linestyle='-')
@@ -223,8 +260,15 @@ class SolarStatisticalAnalyzer:
     def plot_scenario_days(self):
         """Dias representativos."""
         # Encontra dias representativos baseado no primeiro modelo (dados reais são iguais pra todos)
-        ref_model = self.df_day['Modelo'].iloc[0]
-        df_base = self.df_day[self.df_day['Modelo'] == ref_model].copy()
+        if len(self.unique_models) > 0:
+            ref_model = self.unique_models[0]
+            grouped_day = self.df_day.groupby('Modelo', sort=False)
+            try:
+                df_base = grouped_day.get_group(ref_model).copy()
+            except KeyError:
+                df_base = self.df_day.iloc[:0].copy()
+        else:
+            return
         
         # Lógica simples para achar dias: 
         # Céu Claro = Alta Energia, Baixa Volatilidade (Desvio Padrão baixo)
@@ -252,7 +296,11 @@ class SolarStatisticalAnalyzer:
             fig, ax = plt.subplots(figsize=(14, 7))
             
             # Observado e Persistência (apenas uma vez)
-            ref_data = day_data[day_data['Modelo'] == ref_model]
+            grouped_day_data = day_data.groupby('Modelo', sort=False)
+            try:
+                ref_data = grouped_day_data.get_group(ref_model)
+            except KeyError:
+                ref_data = day_data.iloc[:0].copy()
             
             ax.plot(ref_data['Timestamp'], ref_data['Observado'], 
                     color='black', label='Observado', linewidth=2.5, zorder=10)
@@ -263,8 +311,12 @@ class SolarStatisticalAnalyzer:
                     linestyle=st_p['style'], linewidth=1.5, zorder=5)
             
             # Modelos
-            for m in day_data['Modelo'].unique():
-                sub = day_data[day_data['Modelo'] == m]
+            day_models = day_data['Modelo'].unique()
+            for m in day_models:
+                try:
+                    sub = grouped_day_data.get_group(m)
+                except KeyError:
+                    continue
                 style = self._get_style(m)
                 ax.plot(sub['Timestamp'], sub['Previsto'], label=m,
                         color=style['EdgeColor'], linestyle=style['style'], linewidth=1.5)
@@ -279,15 +331,22 @@ class SolarStatisticalAnalyzer:
     def plot_scatter_hist(self):
         """Dashboard antigo: Histograma + Scatter para cada modelo."""
         # 1. Modelos
-        for m in self.df_day['Modelo'].unique():
-            sub = self.df_day[self.df_day['Modelo'] == m]
+        grouped_day = self.df_day.groupby('Modelo', sort=False)
+        for m in self.unique_models:
+            try:
+                sub = grouped_day.get_group(m)
+            except KeyError:
+                continue
             style = self._get_style(m)
             self._plot_single_dashboard(sub['Observado'], sub['Previsto'], m, style['EdgeColor'])
             
         # 2. Persistência
-        if not self.df_day.empty:
-            ref_model = self.df_day['Modelo'].iloc[0]
-            sub = self.df_day[self.df_day['Modelo'] == ref_model]
+        if len(self.unique_models) > 0:
+            ref_model = self.unique_models[0]
+            try:
+                sub = grouped_day.get_group(ref_model)
+            except KeyError:
+                sub = self.df_day.iloc[:len(self.df_day)//len(self.unique_models)]
             self._plot_single_dashboard(sub['Observado'], sub['Persistencia'], 'Persistencia', 'gray')
 
     def _plot_single_dashboard(self, obs, pred, name, color):
@@ -350,7 +409,7 @@ class SolarStatisticalAnalyzer:
         symbols.append(st_p['Symbol'])
         
         # Modelos
-        for m in self.df_day['Modelo'].unique():
+        for m in self.unique_models:
             if m not in pivot.columns: continue
             pred = pivot[m].values
             sdevs.append(np.std(pred))
