@@ -68,8 +68,7 @@ class SolarStatisticalAnalyzer:
         metrics = []
         
         # 1. Métricas dos Modelos
-        for m in self.df_day['Modelo'].unique():
-            sub = self.df_day[self.df_day['Modelo'] == m]
+        for m, sub in self.df_day.groupby('Modelo', sort=False):
             if sub.empty: continue
             
             obs, pred = sub['Observado'], sub['Previsto']
@@ -201,8 +200,7 @@ class SolarStatisticalAnalyzer:
         fig, ax = plt.subplots(figsize=(12, 6))
         
         # Plot Modelos
-        for m in grouped['Modelo'].unique():
-            sub = grouped[grouped['Modelo'] == m]
+        for m, sub in grouped.groupby('Modelo', sort=False):
             style = self._get_style(m)
             ax.plot(sub['Hour'], sub['RMSE'], label=m, 
                     color=style['EdgeColor'], marker=style['Symbol'], linestyle='-')
@@ -263,8 +261,7 @@ class SolarStatisticalAnalyzer:
                     linestyle=st_p['style'], linewidth=1.5, zorder=5)
             
             # Modelos
-            for m in day_data['Modelo'].unique():
-                sub = day_data[day_data['Modelo'] == m]
+            for m, sub in day_data.groupby('Modelo', sort=False):
                 style = self._get_style(m)
                 ax.plot(sub['Timestamp'], sub['Previsto'], label=m,
                         color=style['EdgeColor'], linestyle=style['style'], linewidth=1.5)
@@ -279,8 +276,7 @@ class SolarStatisticalAnalyzer:
     def plot_scatter_hist(self):
         """Dashboard antigo: Histograma + Scatter para cada modelo."""
         # 1. Modelos
-        for m in self.df_day['Modelo'].unique():
-            sub = self.df_day[self.df_day['Modelo'] == m]
+        for m, sub in self.df_day.groupby('Modelo', sort=False):
             style = self._get_style(m)
             self._plot_single_dashboard(sub['Observado'], sub['Previsto'], m, style['EdgeColor'])
             
