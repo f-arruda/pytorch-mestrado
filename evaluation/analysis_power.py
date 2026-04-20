@@ -142,12 +142,13 @@ class PowerAnalyzer:
         
         summary = {'Modelo': self.model_name}
 
+        mean_obs = np.mean(y_true)
+
         for col in pred_cols:
             y_pred = df[col]
             # Extrair um identificador (ex: de 'power_pred_LSTM' tira o '_LSTM')
             name = col.replace('power_pred', 'power').strip('_')
             
-            mean_obs = np.mean(y_true)
             rmse = np.sqrt(mean_squared_error(y_true, y_pred))
             mbe = np.mean(y_pred - y_true)
             mae = mean_absolute_error(y_true, y_pred)
