@@ -67,9 +67,15 @@ class SolarStatisticalAnalyzer:
     def save_global_metrics(self):
         metrics = []
         
+        # Otimização: agrupa os dados fora do loop para evitar varreduras O(N) repetidas
+        grouped_day = self.df_day.groupby('Modelo', sort=False)
+
         # 1. Métricas dos Modelos
         for m in self.df_day['Modelo'].unique():
-            sub = self.df_day[self.df_day['Modelo'] == m]
+            try:
+                sub = grouped_day.get_group(m)
+            except KeyError:
+                continue
             if sub.empty: continue
             
             obs, pred = sub['Observado'], sub['Previsto']
@@ -200,9 +206,15 @@ class SolarStatisticalAnalyzer:
 
         fig, ax = plt.subplots(figsize=(12, 6))
         
+        # Otimização: agrupa os dados fora do loop
+        grouped_by_model = grouped.groupby('Modelo', sort=False)
+
         # Plot Modelos
         for m in grouped['Modelo'].unique():
-            sub = grouped[grouped['Modelo'] == m]
+            try:
+                sub = grouped_by_model.get_group(m)
+            except KeyError:
+                continue
             style = self._get_style(m)
             ax.plot(sub['Hour'], sub['RMSE'], label=m, 
                     color=style['EdgeColor'], marker=style['Symbol'], linestyle='-')
@@ -251,8 +263,14 @@ class SolarStatisticalAnalyzer:
 
             fig, ax = plt.subplots(figsize=(14, 7))
             
+            # Otimização: agrupa os dados fora do loop
+            grouped_day_data = day_data.groupby('Modelo', sort=False)
+
             # Observado e Persistência (apenas uma vez)
-            ref_data = day_data[day_data['Modelo'] == ref_model]
+            try:
+                ref_data = grouped_day_data.get_group(ref_model)
+            except KeyError:
+                ref_data = day_data.iloc[:0].copy()
             
             ax.plot(ref_data['Timestamp'], ref_data['Observado'], 
                     color='black', label='Observado', linewidth=2.5, zorder=10)
@@ -264,7 +282,10 @@ class SolarStatisticalAnalyzer:
             
             # Modelos
             for m in day_data['Modelo'].unique():
-                sub = day_data[day_data['Modelo'] == m]
+                try:
+                    sub = grouped_day_data.get_group(m)
+                except KeyError:
+                    continue
                 style = self._get_style(m)
                 ax.plot(sub['Timestamp'], sub['Previsto'], label=m,
                         color=style['EdgeColor'], linestyle=style['style'], linewidth=1.5)
@@ -278,17 +299,26 @@ class SolarStatisticalAnalyzer:
 
     def plot_scatter_hist(self):
         """Dashboard antigo: Histograma + Scatter para cada modelo."""
+        # Otimização: agrupa os dados fora do loop
+        grouped_day = self.df_day.groupby('Modelo', sort=False)
+
         # 1. Modelos
         for m in self.df_day['Modelo'].unique():
-            sub = self.df_day[self.df_day['Modelo'] == m]
+            try:
+                sub = grouped_day.get_group(m)
+            except KeyError:
+                continue
             style = self._get_style(m)
             self._plot_single_dashboard(sub['Observado'], sub['Previsto'], m, style['EdgeColor'])
             
         # 2. Persistência
         if not self.df_day.empty:
             ref_model = self.df_day['Modelo'].iloc[0]
-            sub = self.df_day[self.df_day['Modelo'] == ref_model]
-            self._plot_single_dashboard(sub['Observado'], sub['Persistencia'], 'Persistencia', 'gray')
+            try:
+                sub = grouped_day.get_group(ref_model)
+                self._plot_single_dashboard(sub['Observado'], sub['Persistencia'], 'Persistencia', 'gray')
+            except KeyError:
+                pass
 
     def _plot_single_dashboard(self, obs, pred, name, color):
         """Gera o layout Histograma (Esq) + Scatter (Dir)."""
