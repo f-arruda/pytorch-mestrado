@@ -3,7 +3,7 @@ import os
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from core.train import main
-from domains.previsao_ceu.refactored_module import build_preprocessing_pipeline
+from core.preprocessing.pipeline import build_preprocessing_pipeline
 from domains.previsao_potencia.dataset import SolarEfficientDataset
 
 import yaml
