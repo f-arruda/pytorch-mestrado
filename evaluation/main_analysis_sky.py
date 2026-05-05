@@ -13,7 +13,7 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
-from evaluation.analysis_k_factor import KFactorAnalyzer
+from evaluation.refactored_analysis_k_factor import KFactorAnalyzer
 from core.utils.xai import SolarXAIEngine
 
 # ================= CONFIGURAÇÃO =================
@@ -47,7 +47,7 @@ warnings.filterwarnings('ignore')
 # Importações do projeto
 from core.models.encdec_model import EncDecModel
 from domains.previsao_ceu.dataset import SolarEfficientDataset
-from domains.previsao_ceu.preprocessing import SolarPreprocessor
+from domains.previsao_ceu.refactored_module import build_preprocessing_pipeline
 from domains.previsao_ceu.postprocessing import get_strategy
 
 # ================= FUNÇÕES AUXILIARES =================
@@ -80,7 +80,7 @@ def process_model(exp_dir):
     config = get_config(exp_dir)
     pp_params = get_preprocessing_params(config)
     
-    preprocessor = SolarPreprocessor(
+    preprocessor = build_preprocessing_pipeline(
         latitude=pp_params['latitude'], longitude=pp_params['longitude'], 
         altitude=pp_params['altitude'], timezone=pp_params['timezone'], 
         nominal_power=pp_params['nominal_power'], start_year=pp_params['start_year'],
@@ -98,7 +98,12 @@ def process_model(exp_dir):
         df_raw = df_raw.drop_duplicates(subset=['Date_Time'], keep='first').set_index('Date_Time').sort_index()
 
     try: 
-        preprocessor.load_scalers(exp_dir)
+        if hasattr(preprocessor, 'load_scalers'):
+            preprocessor.load_scalers(exp_dir)
+        elif hasattr(preprocessor, 'named_steps') and 'scaler' in preprocessor.named_steps:
+            preprocessor.named_steps['scaler'].load_scalers(exp_dir)
+        else:
+            raise AttributeError("No load_scalers method found.")
     except: 
         preprocessor.fit(df_raw)
     
