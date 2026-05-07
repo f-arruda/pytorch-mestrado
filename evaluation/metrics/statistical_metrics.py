@@ -30,6 +30,9 @@ class SolarStatisticalAnalyzer:
         # Se quiser ajustar, mude aqui.
         self.df_day = self.df[(self.df['Hour'] >= 6) & (self.df['Hour'] <= 18)].copy()
 
+        # Otimização: Cache de modelos únicos para evitar O(N) scans no .unique() em loops
+        self.unique_models = self.df_day['Modelo'].unique() if not self.df_day.empty else np.array([])
+
         # ================= ESTILOS ORIGINAIS =================
         self.markers_dict = {
             'Observado': {'Symbol': 'h', 'Size': 12, 'FaceColor': 'black', 'EdgeColor': 'black', 'style': '-'},
@@ -68,7 +71,7 @@ class SolarStatisticalAnalyzer:
         metrics = []
         
         # 1. Métricas dos Modelos
-        for m in self.df_day['Modelo'].unique():
+        for m in self.unique_models:
             sub = self.df_day[self.df_day['Modelo'] == m]
             if sub.empty: continue
             
@@ -96,7 +99,8 @@ class SolarStatisticalAnalyzer:
         # 2. Métricas da Persistência (Referência)
         if not self.df_day.empty:
             # Pega qualquer slice para calcular a persistência global
-            sub = self.df_day.iloc[:len(self.df_day)//len(self.df_day['Modelo'].unique())]
+            num_models = len(self.unique_models) if len(self.unique_models) > 0 else 1
+            sub = self.df_day.iloc[:len(self.df_day)//num_models]
             
             rmse_p = np.sqrt(mean_squared_error(sub['Observado'], sub['Persistencia']))
             mae_p = mean_absolute_error(sub['Observado'], sub['Persistencia'])
@@ -119,7 +123,7 @@ class SolarStatisticalAnalyzer:
     def plot_boxplots_hourly(self):
         """Boxplots manuais com estilo customizado."""
         hours = sorted(self.df_day['Hour'].unique())
-        models = sorted(self.df_day['Modelo'].unique())
+        models = sorted(self.unique_models)
         all_series = ['Observado', 'Persistencia'] + models
         
         fig, ax = plt.subplots(figsize=(16, 8))
@@ -279,7 +283,7 @@ class SolarStatisticalAnalyzer:
     def plot_scatter_hist(self):
         """Dashboard antigo: Histograma + Scatter para cada modelo."""
         # 1. Modelos
-        for m in self.df_day['Modelo'].unique():
+        for m in self.unique_models:
             sub = self.df_day[self.df_day['Modelo'] == m]
             style = self._get_style(m)
             self._plot_single_dashboard(sub['Observado'], sub['Previsto'], m, style['EdgeColor'])
@@ -350,7 +354,7 @@ class SolarStatisticalAnalyzer:
         symbols.append(st_p['Symbol'])
         
         # Modelos
-        for m in self.df_day['Modelo'].unique():
+        for m in self.unique_models:
             if m not in pivot.columns: continue
             pred = pivot[m].values
             sdevs.append(np.std(pred))
