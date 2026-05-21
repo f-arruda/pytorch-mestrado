@@ -549,10 +549,18 @@ class SolarPreprocessor(BaseEstimator, TransformerMixin):
 
         print("Iniciando otimização do Linke Turbidity...")
 
+        # ⚡ Bolt Optimization: Calculate valid mask and group by day OUTSIDE the loop
+        # This replaces an O(N) boolean mask scan inside the loop with an O(1) group lookup,
+        # dramatically speeding up Linke Turbidity processing on large datasets.
+        df_valid = df[(df['elevation'] > 10) & (df['ghi'] > 10)]
+        grouped_valid = df_valid.groupby(df_valid.index.date)
+
         for day in unique_days:
             # Selecionar dados do dia, APENAS período diurno e válido
-            mask_day = (df.index.date == day) & (df['elevation'] > 10) & (df['ghi'] > 10)
-            sub_df = df.loc[mask_day]
+            try:
+                sub_df = grouped_valid.get_group(day)
+            except KeyError:
+                sub_df = df_valid.iloc[:0].copy()
             
             # Verifica se o dia foi classificado como claro
             is_clear = day in clear_days_dates
