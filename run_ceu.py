@@ -3,7 +3,7 @@ import os
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from core.train import main
-from domains.previsao_ceu.preprocessing import SolarPreprocessor
+from core.preprocessing.pipeline import build_preprocessing_pipeline
 from domains.previsao_ceu.dataset import SolarEfficientDataset
 
 import yaml
@@ -16,4 +16,4 @@ CONFIG_CEU = load_config()
 
 if __name__ == "__main__":
     print("Iniciando treinamento de Previsão de Condição de Céu...")
-    main(CONFIG_CEU, SolarPreprocessor, SolarEfficientDataset)
+    main(CONFIG_CEU, build_preprocessing_pipeline, SolarEfficientDataset)
