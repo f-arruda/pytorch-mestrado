@@ -198,7 +198,10 @@ def main(config, preprocessor_class, dataset_class):
     )
     
     preprocessor.fit(df)
-    preprocessor.save_scalers(exp_dir)
+    if hasattr(preprocessor, 'save_scalers'):
+        preprocessor.save_scalers(exp_dir)
+    elif hasattr(preprocessor, 'named_steps') and 'scaler' in preprocessor.named_steps:
+        preprocessor.named_steps['scaler'].save_scalers(exp_dir)
     #preprocessor.save_scalers(ARTIFACTS_DIR)
     
     # O método transform usa o column_mapping para renomear as colunas

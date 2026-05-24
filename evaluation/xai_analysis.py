@@ -14,7 +14,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # Importações do projeto
 from core.models.encdec_model import EncDecModel 
 from domains.previsao_potencia.dataset import SolarEfficientDataset
-from domains.previsao_potencia.preprocessing import SolarPreprocessor
+from domains.previsao_ceu.refactored_module import build_preprocessing_pipeline
 from core.utils.xai import SolarXAIEngine
 
 # ================= CONFIGURAÇÃO =================
@@ -82,7 +82,7 @@ def main():
         base_config = load_experiment_config(EXPERIMENTS_DIRS[0])
         pp_params = get_preprocessing_params(base_config)
         
-        preprocessor = SolarPreprocessor(
+        preprocessor = build_preprocessing_pipeline(
             latitude=pp_params['latitude'], longitude=pp_params['longitude'], 
             altitude=pp_params['altitude'], timezone=pp_params['timezone'], 
             nominal_power=pp_params['nominal_power'], start_year=pp_params['start_year'],
@@ -100,7 +100,13 @@ def main():
         df_raw = df_raw.drop_duplicates(subset=['Date_Time'], keep='first').set_index('Date_Time').sort_index()
     
     # Fit/Load Scalers
-    try: preprocessor.load_scalers(EXPERIMENTS_DIRS[0])
+    try: 
+        if hasattr(preprocessor, 'load_scalers'):
+            preprocessor.load_scalers(EXPERIMENTS_DIRS[0])
+        elif hasattr(preprocessor, 'named_steps') and 'scaler' in preprocessor.named_steps:
+            preprocessor.named_steps['scaler'].load_scalers(EXPERIMENTS_DIRS[0])
+        else:
+            raise AttributeError("No load_scalers method found.")
     except: preprocessor.fit(df_raw)
     
     df_processed = preprocessor.transform(df_raw)

@@ -13,6 +13,7 @@ preprocessing:
   features_to_scale:
     - temp_amb
     - wind_speed
+    - rain
   column_mapping:
     Pot_BT: target
     Irradiação Global horária(horizontal) kWh/m2: ghi
@@ -21,6 +22,7 @@ preprocessing:
     Temperatura ambiente °C: temp_amb
     Umidade Relativa %: humidity
     Velocidade média do vento m/s: wind_speed
+    Pluviômetro mm: rain
 prediction_mode: sky
 target_col:
   - kt

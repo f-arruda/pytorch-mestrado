@@ -11,3 +11,5 @@ pyyaml
 mlflow
 pytorch-lightning
 statsmodels
+plotly
+umap-learn
