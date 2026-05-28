@@ -547,12 +547,20 @@ class SolarPreprocessor(BaseEstimator, TransformerMixin):
 
         unique_days = np.unique(df.index.date)
 
+        # Pre-group the dataframe by date to avoid O(N) filtering inside the loop
+        grouped_by_date = df.groupby(df.index.date)
+
         print("Iniciando otimização do Linke Turbidity...")
 
         for day in unique_days:
+            try:
+                day_df = grouped_by_date.get_group(day)
+            except KeyError:
+                day_df = df.iloc[:0].copy()
+
             # Selecionar dados do dia, APENAS período diurno e válido
-            mask_day = (df.index.date == day) & (df['elevation'] > 10) & (df['ghi'] > 10)
-            sub_df = df.loc[mask_day]
+            mask_day = (day_df['elevation'] > 10) & (day_df['ghi'] > 10)
+            sub_df = day_df.loc[mask_day]
             
             # Verifica se o dia foi classificado como claro
             is_clear = day in clear_days_dates

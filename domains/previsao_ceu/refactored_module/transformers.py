@@ -249,11 +249,19 @@ class ClearSkyEstimator(BaseEstimator, TransformerMixin):
 
         unique_days = np.unique(df.index.date)
 
+        # Pre-group the dataframe by date to avoid O(N) filtering inside the loop
+        grouped_by_date = df.groupby(df.index.date)
+
         print("Iniciando otimização do Linke Turbidity...")
 
         for day in unique_days:
-            mask_day = (df.index.date == day) & (df['elevation'] > 10) & (df['ghi'] > 10)
-            sub_df = df.loc[mask_day]
+            try:
+                day_df = grouped_by_date.get_group(day)
+            except KeyError:
+                day_df = df.iloc[:0].copy()
+
+            mask_day = (day_df['elevation'] > 10) & (day_df['ghi'] > 10)
+            sub_df = day_df.loc[mask_day]
             
             is_clear = day in clear_days_dates
             
