@@ -1,0 +1,44 @@
+services:
+  # Ambiente principal de desenvolvimento interativo e treinamento
+  dev-env:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: dev
+    image: dl-torch-dev:latest
+    container_name: dl_torch_dev_container
+    ports:
+      - "8888:8888"
+    volumes:
+      - .:/workspace
+    environment:
+      - TF_CPP_MIN_LOG_LEVEL=2
+      - MLFLOW_TRACKING_URI=http://mlflow-server:5000
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    ipc: host
+    ulimits:
+      memlock: -1
+      stack: 67108864
+    working_dir: /workspace
+    depends_on:
+      - mlflow-server
+
+  # Servidor de rastreamento do MLflow (Tracking Server e UI)
+  mlflow-server:
+    image: python:3.10-slim
+    container_name: mlflow_server_container
+    ports:
+      - "5000:5000"
+    volumes:
+      - .:/workspace
+    working_dir: /workspace
+    # Inicializa instalando mlflow (com dependência nativa do SQLite) e levanta o servidor
+    entrypoint: >
+      sh -c "pip install mlflow pysqlite3 && 
+             mlflow server --backend-store-uri sqlite:///workspace/mlflow.db --default-artifact-root /workspace/mlruns --host 0.0.0.0 --port 5000"

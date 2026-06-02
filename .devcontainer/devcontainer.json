@@ -1,14 +1,20 @@
 {
-    "image": "dl-torch:latest",
     "name": "DL/ML Otimizado (NVIDIA NGC)",
+    
+    // Constrói a partir do Dockerfile local utilizando o estágio 'dev'
+    "build": {
+        "dockerfile": "../Dockerfile",
+        "target": "dev"
+    },
 
-    // Mantemos as otimizações de GPU no runArgs
+    // Otimizações de GPU no runArgs e mapeamento de portas (Jupyter e MLflow)
     "runArgs": [
         "--gpus", "all",
         "--ipc=host",
         "--ulimit", "memlock=-1",
         "--ulimit", "stack=67108864",
-        "-p", "8888:8888"
+        "-p", "8888:8888",
+        "-p", "5000:5000"
     ],
 
     "extensions": [

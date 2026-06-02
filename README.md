@@ -103,3 +103,55 @@ Automatiza o plotting comparativo (Diagrama de Taylor, Scatter Plots e Histogram
 ## Estratégias e Scripts
 
 - A arquitetura utiliza arquivos de configuração YAML unificados dentro da pasta `configs/` (ex: `ceu_config.yaml` e `potencia_config.yaml`). Os scripts de entrada (`run_ceu.py` e `run_potencia.py`) carregam essas configurações e as repassam para a função principal de treinamento (`core/train.py`). Isso orienta o `preprocessor` de *from* -> *to* nos nomes na base de dados sem chumbá-las no script em si e permite definir facilmente os hiperparâmetros e os targets `kt` em céu vs potência elétrica direta.
+
+---
+
+## 🐳 Infraestrutura de Containers (Docker)
+
+O repositório possui suporte completo a containers para facilitar a padronização do ambiente de aprendizado profundo (Deep Learning) com suporte a GPU da NVIDIA, orquestração e rastreamento de experimentos.
+
+### 1. Arquitetura de Imagens (Dockerfile Multi-Stage)
+O `Dockerfile` é estruturado em estágios para otimizar o tamanho da imagem e separar os ambientes de execução:
+*   **`base`**: Baseado na imagem oficial otimizada da NVIDIA NGC (`nvcr.io/nvidia/pytorch`), instala ferramentas essenciais e dependências do Python utilizando cache do Pip para acelerar as compilações subsequentes.
+*   **`runner`**: Imagem enxuta voltada para execução de jobs de treinamento em produção (ex: rodar diretamente os scripts via linha de comando ou CI/CD), contendo apenas os códigos-fonte necessários.
+*   **`dev`**: Estágio que inicializa o Jupyter Notebook e ferramentas de desenvolvimento interativo.
+
+### 2. Orquestração com Docker Compose
+O arquivo `docker-compose.yml` automatiza a inicialização de múltiplos serviços integrados:
+*   **`dev-env`**: Serviço do Jupyter Notebook mapeado na porta `8888` com suporte habilitado para GPUs NVIDIA e configurações de memória do host compartilhada (`ipc: host`).
+*   **`mlflow-server`**: Serviço auxiliar que sobe o servidor de rastreamento do MLflow (MLflow Tracking UI) na porta `5000`, centralizando a gravação de métricas locais (`mlflow.db`) e o armazenamento dos artefatos dos modelos (`mlruns/`).
+
+#### Como Iniciar o Ambiente
+Para iniciar o Jupyter e a interface do MLflow simultaneamente:
+```bash
+docker compose up
+```
+
+#### Acesso às Portas Locais
+*   **Jupyter Notebook**: [http://localhost:8888](http://localhost:8888)
+*   **MLflow Tracking UI**: [http://localhost:5000](http://localhost:5000)
+
+---
+
+## ⚙️ Dicas de Performance e Uso (WSL2 / Windows)
+
+Para garantir o melhor desempenho e evitar alto consumo de recursos (RAM e CPU) ao rodar o ambiente sob o subsistema WSL2:
+
+### 1. Limite a RAM do WSL2
+Crie ou configure o arquivo `.wslconfig` no diretório do seu usuário Windows (`C:\Users\<SeuUsuario>\.wslconfig`) para evitar que a máquina virtual de desenvolvimento esgote a RAM da máquina host:
+```ini
+[wsl2]
+memory=6GB                  # Limite de RAM física para a VM
+processors=4                # Limite de cores de CPU
+autoMemoryReclaim=gradual   # Liberação automática de cache
+```
+Após salvar o arquivo, execute `wsl --shutdown` no PowerShell para aplicar.
+
+### 2. Use o Sistema de Arquivos Nativo do Linux (ext4)
+Evite abrir e compilar containers a partir de caminhos de arquivos do Windows (ex: `/mnt/c/Users/...` ou pastas sincronizadas com o OneDrive).
+A recomendação oficial de performance é clonar este repositório diretamente no sistema de arquivos interno do Linux no WSL (ex: `~/Remodelacao_mestrado`) e abrir o VS Code a partir de lá:
+```bash
+code ~/Remodelacao_mestrado
+```
+Isso aumenta a velocidade de I/O de disco em até 10 vezes e diminui significativamente o consumo de RAM pelo processo `vmmem`.
+

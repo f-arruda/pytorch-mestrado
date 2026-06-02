@@ -1,9 +1,24 @@
 # .dockerignore
 
-# Dados e Modelos (Arquivos Persistentes)
-data/
-models/
-notebooks/
-src/
-utils/
+# Git e metadados
+.git
+.gitignore
+.gitattributes
 
+# Caches locais
+**/__pycache__
+**/.pytest_cache
+**/.ipynb_checkpoints
+**/.vscode
+**/.devcontainer
+.agents/
+.jules/
+
+# Bancos de dados e execuções do MLflow (mapeados via volumes, não embutidos na imagem)
+mlflow.db
+mlruns/
+optimization_results/
+artifacts/
+trained_models/
+data/
+documentos_relatorio/
